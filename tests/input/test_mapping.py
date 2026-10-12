@@ -6,6 +6,7 @@ import pytest
 from franka_teleop.input.mapping import (
     BUTTON_ACTIONS,
     BUTTONS,
+    LAYOUT_HELP,
     GamepadMapper,
     GamepadSnapshot,
     Intent,
@@ -66,11 +67,35 @@ def test_rest_is_zero_and_triggers_cancel():
     assert not any(math.copysign(1, v) < 0 for v in (*both.linear, *both.angular))  # no -0.0
 
 
+def test_layout_help_explains_base_and_tool_frame():
+    text = " ".join(LAYOUT_HELP.split())
+    assert "hold LB = deadman" in text
+    assert "Directions are for the base frame" in text
+    assert "In tool frame they follow the tool's axes" in text
+    assert "base -y" in text and "moves it down, along the approach" in text
+
+
 def test_deadman_is_left_shoulder():
     m = GamepadMapper()
     assert not m.update(snap()).deadman
     assert m.update(snap(leftshoulder=True)).deadman
     assert not m.update(snap(rightshoulder=True)).deadman
+
+
+def test_deadman_needs_a_release_after_connect_and_reconnect():
+    m = GamepadMapper()
+    held = snap(leftshoulder=True, lefty=-1.0)
+    assert not m.update(held).deadman and m.deadman_blocked  # held at startup
+    assert not m.update(held).deadman
+    assert not m.update(snap(lefty=-1.0)).deadman and not m.deadman_blocked  # released: armed
+    assert m.update(held).deadman
+    m.update(snap(connected=False))  # dropout with LB held ...
+    assert not m.deadman_blocked
+    out = m.update(held)  # ... and back with LB still held: no motion
+    assert not out.deadman and m.deadman_blocked
+    assert not m.update(held).deadman
+    m.update(snap())
+    assert m.update(held).deadman
 
 
 def test_disconnected_is_deadman_off_and_zero():

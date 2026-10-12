@@ -1,7 +1,10 @@
 """JoystickClient in-process: sources -> ZMQ -> a test SUB (and a fake node publishing status)."""
 
+import contextlib
 import io
 import math
+import os
+import select
 import threading
 import time
 from contextlib import contextmanager
@@ -359,6 +362,63 @@ def test_hud_refreshes_single_line_at_5hz(cfg):
     finally:
         client.close()
     assert out.getvalue().endswith("\n")
+
+
+class PipeTTY(io.TextIOWrapper):
+    """A text stream on a pipe's write end that claims to be a terminal."""
+
+    def isatty(self):
+        return True
+
+
+def test_hud_never_blocks_the_command_loop(cfg):
+    """Review r8: a terminal stopped with Ctrl-S (or a full pipe) must not freeze the loop."""
+    r, w = os.pipe()
+    os.set_blocking(w, False)
+    with contextlib.suppress(BlockingIOError):
+        while True:
+            os.write(w, b"x" * 65536)
+    os.set_blocking(w, True)  # full: any further write would block
+    stream = PipeTTY(io.BufferedWriter(io.FileIO(w, "w", closefd=False)))
+    clock = Clock()
+    client = JoystickClient(cfg, FakeSource(), hud=True, hud_stream=stream, clock=clock)
+
+    def steps(n):
+        for _ in range(n):
+            client.step()
+            clock.t += 0.3  # every step is due for a HUD refresh
+
+    try:
+        t = threading.Thread(target=steps, args=(10,), daemon=True)
+        t.start()
+        t.join(5.0)
+        assert not t.is_alive(), "the command loop blocked on a HUD write"
+        assert client.sent == 10 and client.hud_skipped == 10 and client.hud
+        while select.select([r], [], [], 0)[0]:  # the reader catches up
+            os.read(r, 1 << 20)
+        steps(1)
+        assert client.hud_skipped == 10
+        assert b"\r" in os.read(r, 1 << 20)
+    finally:
+        os.set_blocking(w, False)
+        with contextlib.suppress(BlockingIOError):
+            while select.select([r], [], [], 0)[0]:
+                os.read(r, 1 << 20)
+        client.close()
+        os.close(r)
+        os.close(w)
+
+
+def test_hud_turns_itself_off_when_the_terminal_is_gone(cfg):
+    class DeadTTY(FakeTTY):
+        def write(self, s):
+            raise OSError(5, "Input/output error")
+
+    client = JoystickClient(cfg, FakeSource(), hud=True, hud_stream=DeadTTY(), clock=Clock())
+    client.step()
+    assert not client.hud
+    client.step()
+    client.close()  # no trailing-newline write error either
 
 
 def test_hud_off_writes_nothing(cfg):

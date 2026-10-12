@@ -8,15 +8,20 @@ import time
 import mujoco
 import numpy as np
 import pytest
+import zmq
 
 from franka_teleop.config import READY_Q
-from franka_teleop.protocol import NodeStatus
-from franka_teleop.sim.scene import ROBOT_PREFIX
-from franka_teleop.transport import publisher, send
+from franka_teleop.protocol import NodeStatus, ProtocolError, SceneInfo
+from franka_teleop.sim.scene import ROBOT_PREFIX, scene_xml
+from franka_teleop.sim.server import SceneRpc
+from franka_teleop.transport import context, publisher, send
+from franka_teleop.viz.overlay import STALE_AFTER_S, state_text, viewer_rows
 from franka_teleop.viz.source import (
+    SceneMismatch,
     SceneSource,
     SourceError,
     StatusSource,
+    decode_scene_reply,
     open_source,
     request_scene_info,
 )
@@ -95,6 +100,77 @@ def test_auto_falls_back_to_status_without_ft_sim():
         src.close()
 
 
+@pytest.fixture
+def fake_ft_sim():
+    """Factory: an in-process ft-sim scene RPC on ``cfg``'s port, reporting ``robot_host``."""
+    servers = []
+
+    def start(cfg, robot_host: str) -> SceneRpc:
+        rep = context().socket(zmq.REP)
+        rep.setsockopt(zmq.LINGER, 0)
+        rep.bind(cfg.net.bind(cfg.net.scene_rpc_port))
+        info = SceneInfo(
+            xml=scene_xml("empty"), nq=9, robot_prefix=ROBOT_PREFIX, robot_host=robot_host
+        )
+        rpc = SceneRpc(rep, info)
+        rpc.start()
+        servers.append(rpc)
+        return rpc
+
+    yield start
+    for rpc in servers:
+        rpc.stop()
+
+
+def test_auto_uses_status_with_a_real_robot_config(fake_ft_sim):
+    """Review r5: a leftover ft-sim on the shared ports must not stand in for the real arm."""
+    sim_cfg = make_test_config()
+    rpc = fake_ft_sim(sim_cfg, sim_cfg.robot.host)
+    real_cfg = make_test_config(host="172.16.0.2", sim__enabled=False)
+    real_cfg.net = sim_cfg.net  # same ports, as configs/sim.toml and real.toml
+    t0 = time.monotonic()
+    src = open_source(real_cfg, "auto")
+    try:
+        assert src.kind == "status" and "ft-node status" in src.describe()
+        assert rpc.served == 0  # ft-sim is not even asked ...
+        assert time.monotonic() - t0 < 2.0  # ... so there is no probe timeout either
+    finally:
+        src.close()
+
+
+@pytest.mark.parametrize("reported", ["", "same"])
+def test_auto_uses_ft_sim_simulating_this_robot_host(fake_ft_sim, reported):
+    cfg = make_test_config()
+    fake_ft_sim(cfg, cfg.robot.host if reported == "same" else reported)  # "": older ft-sim
+    src = open_source(cfg, "auto")
+    try:
+        assert isinstance(src, SceneSource)
+    finally:
+        src.close()
+
+
+def test_scene_of_another_robot_host_is_rejected(fake_ft_sim, capsys):
+    cfg = make_test_config()
+    fake_ft_sim(cfg, "127.9.9.9")
+    src = open_source(cfg, "auto")
+    try:
+        assert src.kind == "status"
+    finally:
+        src.close()
+    assert "simulates robot.host 127.9.9.9" in capsys.readouterr().err
+    t0 = time.monotonic()
+    with pytest.raises(SceneMismatch, match=f"127.9.9.9.*robot.host is {cfg.robot.host}"):
+        open_source(cfg, "scene", wait=5.0)
+    assert time.monotonic() - t0 < 2.0  # does not wait for a stale sim to change
+
+
+def test_error_reply_from_ft_sim_is_reported():
+    rpc = SceneRpc(None, SceneInfo(xml="", nq=0, robot_prefix=""))
+    reply = rpc.reply_to([b"a", b"b"])
+    with pytest.raises(ProtocolError, match=r"ft-sim rejected the scene request: .*2 frames"):
+        decode_scene_reply(reply)
+
+
 def test_scene_source_gives_up_after_wait():
     cfg = make_test_config()
     t0 = time.monotonic()
@@ -139,6 +215,51 @@ def test_status_source_maps_joints_and_fingers():
         )
         assert np.allclose(src.qpos[src.arm_addr], q2)
         assert np.allclose(src.qpos[src.finger_addr], 0.03)
+    finally:
+        src.close()
+        pub.close()
+
+
+def test_status_source_ignores_nan_joints():
+    """Review r6: ft-node publishes NaN joints while it has no arm state."""
+    cfg = make_test_config()
+    src = StatusSource(cfg)
+    try:
+        nan_q = node_status([math.nan] * 7)
+        assert not src._poll_state(nan_q)
+        assert np.allclose(src.qpos[src.arm_addr], cfg.sim.initial_q) and not src.has_state
+        q = np.array([0.3, -0.5, 0.2, -2.0, 0.1, 1.8, 0.4])
+        assert src._poll_state(node_status(q))
+        assert not src._poll_state(node_status([*q[:6], math.inf]))
+        assert np.allclose(src.qpos[src.arm_addr], q)  # the last valid pose is kept
+        data = mujoco.MjData(src.model)
+        data.qpos[:] = src.qpos
+        mujoco.mj_kinematics(src.model, data)
+        assert np.isfinite(data.geom_xpos).all()
+    finally:
+        src.close()
+
+
+def test_state_and_status_go_stale():
+    """Viewers flag a state (and a NodeStatus) older than STALE_AFTER_S."""
+    cfg = make_test_config()
+    pub = publisher(cfg.net.bind(cfg.net.status_port))
+    src = StatusSource(cfg)
+    try:
+        rows = dict(viewer_rows(src))
+        assert rows["source"] == "status (waiting for state)"
+        assert rows["node"].startswith("no status")
+        assert math.isinf(src.state_age()) and math.isinf(src.status_age())
+        assert publish_until(pub, node_status(READY_Q), src.poll)
+        now = time.monotonic()
+        rows = viewer_rows(src, now)
+        assert rows[0] == ("source", "status") and rows[1][0] == "mode"  # live, no flag
+        later = now + STALE_AFTER_S + 1.0  # ages just over 2 s
+        rows = viewer_rows(src, later)
+        assert rows[0] == ("source", "status (STALE: no update for 2 s)")
+        assert rows[1] == ("node", "STALE: no status for 2 s (last known below)")
+        assert ("mode", "teleop [sim]") in rows
+        assert state_text(True, STALE_AFTER_S - 0.1) == "live"
     finally:
         src.close()
         pub.close()

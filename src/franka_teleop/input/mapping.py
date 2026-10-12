@@ -17,6 +17,10 @@ Default layout (operator frame, see :class:`franka_teleop.protocol.TeleopCommand
     d-pad left/right roll                           X           base/tool frame
     d-pad up/down    speed level +/-                Y           home
                                                     Start       recover from error
+
+The directions are for the base frame. In tool frame the node applies the same intent along the
+tool's axes: at the ready pose (tool pointing down), "left" moves the hand to base -y and RT
+("up") moves it down, along the approach direction.
 """
 
 from __future__ import annotations
@@ -62,7 +66,9 @@ BUTTON_ACTIONS: Mapping[str, str] = {
 LAYOUT_HELP = """\
   hold LB = deadman        left stick = forward/back, left/right    RT/LT = up/down
   right stick = yaw (x), pitch (y)    d-pad left/right = roll    d-pad up/down = speed +/-
-  A gripper   B stop   X base/tool frame   Y home   Start recover"""
+  A gripper   B stop   X base/tool frame   Y home   Start recover
+  Directions are for the base frame. In tool frame they follow the tool's axes: at the ready
+  pose "left" moves the hand to base -y and RT ("up") moves it down, along the approach."""
 
 # Names accepted by input.invert, in (linear..., angular...) order.
 INTENT_AXES = ("lin_x", "lin_y", "lin_z", "ang_x", "ang_y", "ang_z")
@@ -166,10 +172,12 @@ def apply_invert(intent: Intent, invert: Iterable[str]) -> Intent:
 class GamepadMapper:
     """Stateful mapping from :class:`GamepadSnapshot` to :class:`Intent`.
 
-    State is the previous button set (for rising edges) and the action counters. The first
-    connected snapshot (at startup and after every reconnect) only seeds the previous button
-    set: a button that is already held when the pad (re)appears does not fire, so re-plugging
-    a pad with Y pressed does not send the arm home.
+    State is the previous button set (for rising edges), the action counters and whether the
+    deadman is armed. The first connected snapshot (at startup and after every reconnect) only
+    seeds the previous button set: a button that is already held when the pad (re)appears does
+    not fire, so re-plugging a pad with Y pressed does not send the arm home. Likewise the
+    deadman stays off after every (re)connect until LB has been seen released once, so a pad
+    that comes back with LB held (or wedged) does not resume motion by itself.
     """
 
     def __init__(self, deadzone: float = 0.12, expo: float = 0.5, invert: Iterable[str] = ()):
@@ -183,6 +191,12 @@ class GamepadMapper:
         apply_invert(Intent(), self.invert)  # validate names early
         self.counters = zero_counters()
         self._prev: dict[str, bool] | None = None
+        self._deadman_armed = False
+
+    @property
+    def deadman_blocked(self) -> bool:
+        """LB is held but ignored: it has not been released since the pad (re)connected."""
+        return self._prev is not None and self._prev[DEADMAN_BUTTON] and not self._deadman_armed
 
     @classmethod
     def from_config(cls, cfg) -> GamepadMapper:
@@ -196,9 +210,12 @@ class GamepadMapper:
     def update(self, snap: GamepadSnapshot) -> Intent:
         if not snap.connected:
             self._prev = None
+            self._deadman_armed = False
             return Intent(counters=dict(self.counters))
 
         pressed = {b: snap.button(b) for b in BUTTONS}
+        if not pressed[DEADMAN_BUTTON]:
+            self._deadman_armed = True
         if self._prev is not None:
             for button, action in BUTTON_ACTIONS.items():
                 if pressed[button] and not self._prev[button]:
@@ -212,7 +229,7 @@ class GamepadMapper:
         roll = float(pressed["dpright"]) - float(pressed["dpleft"])
         # "+ 0.0" turns -0.0 into 0.0.
         intent = Intent(
-            deadman=pressed[DEADMAN_BUTTON],
+            deadman=pressed[DEADMAN_BUTTON] and self._deadman_armed,
             linear=(-ly + 0.0, -lx + 0.0, clamp(rt - lt) + 0.0),
             angular=(roll + 0.0, -ry + 0.0, -rx + 0.0),
             counters=dict(self.counters),

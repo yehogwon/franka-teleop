@@ -43,6 +43,11 @@ def _load_sdl() -> ctypes.CDLL:
     sdl.SDL_JoystickOpen.argtypes = [ctypes.c_int]
     sdl.SDL_JoystickOpen.restype = ctypes.c_void_p
     sdl.SDL_JoystickClose.argtypes = [ctypes.c_void_p]
+    sdl.SDL_JoystickInstanceID.argtypes = [ctypes.c_void_p]
+    sdl.SDL_JoystickInstanceID.restype = ctypes.c_int32
+    sdl.SDL_JoystickGetDeviceInstanceID.argtypes = [ctypes.c_int]
+    sdl.SDL_JoystickGetDeviceInstanceID.restype = ctypes.c_int32
+    sdl.SDL_NumJoysticks.restype = ctypes.c_int
     sdl.SDL_JoystickSetVirtualAxis.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int16]
     sdl.SDL_JoystickSetVirtualButton.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint8]
     sdl.SDL_JoystickSetVirtualHat.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint8]
@@ -70,30 +75,45 @@ class VirtualGamepad:
             self._spec = (SDL_JOYSTICK_TYPE_UNKNOWN, 6, 11, 1)
         else:
             raise ValueError(kind)
-        self.index = -1
         self.handle = None
+        self.instance_id = -1
+        """SDL instance id of the current attachment (a re-attach gets a new one)."""
         self.attach()
 
     @property
     def attached(self) -> bool:
         return self.handle is not None
 
+    @property
+    def index(self) -> int:
+        """Current SDL device index (-1 if detached). SDL renumbers devices when one with a
+        lower index is removed, so this is looked up by instance id each time."""
+        if self.handle is None:
+            return -1
+        for i in range(self.sdl.SDL_NumJoysticks()):
+            if self.sdl.SDL_JoystickGetDeviceInstanceID(i) == self.instance_id:
+                return i
+        return -1
+
     def attach(self) -> None:
-        self.index = self.sdl.SDL_JoystickAttachVirtual(*self._spec)
-        if self.index < 0:
+        index = self.sdl.SDL_JoystickAttachVirtual(*self._spec)
+        if index < 0:
             raise RuntimeError(f"SDL_JoystickAttachVirtual: {self.sdl.SDL_GetError().decode()}")
-        self.handle = self.sdl.SDL_JoystickOpen(self.index)
+        self.handle = self.sdl.SDL_JoystickOpen(index)
         if not self.handle:
             raise RuntimeError(f"SDL_JoystickOpen: {self.sdl.SDL_GetError().decode()}")
+        self.instance_id = self.sdl.SDL_JoystickInstanceID(self.handle)
         self.reset()
 
     def detach(self) -> None:
         """Simulate unplugging the pad."""
         if self.handle is None:
             return
+        index = self.index
         self.sdl.SDL_JoystickClose(self.handle)
         self.handle = None
-        self.sdl.SDL_JoystickDetachVirtual(self.index)
+        if index >= 0:
+            self.sdl.SDL_JoystickDetachVirtual(index)
 
     def reset(self) -> None:
         """Sticks centred, triggers released, buttons up, hat centred."""

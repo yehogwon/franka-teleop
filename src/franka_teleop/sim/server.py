@@ -22,11 +22,20 @@ import threading
 import time
 from collections.abc import Callable
 
+import msgspec
 import numpy as np
 import zmq
 
 from ..config import Config, ConfigError, add_config_args, config_from_args
-from ..protocol import ProtocolError, SceneInfo, SceneRequest, SceneState, decode, encode
+from ..protocol import (
+    PROTOCOL_VERSION,
+    ProtocolError,
+    SceneInfo,
+    SceneRequest,
+    SceneState,
+    decode,
+    encode,
+)
 from ..transport import context, publisher, send
 
 READY_PREFIX = "ft-sim ready:"
@@ -129,7 +138,14 @@ class ScenePublisher:
 
 
 class SceneRpc(threading.Thread):
-    """REP server: every request gets the (pre-encoded) SceneInfo of the running scene."""
+    """REP server for the scene: a SceneRequest gets the (pre-encoded) SceneInfo of the
+    running scene; anything else (several frames, undecodable, another protocol version) gets
+    an error reply, a msgpack map ``{"v": PROTOCOL_VERSION, "error": "<why>"}``.
+
+    REP must answer every request exactly once or the socket wedges, so every received request
+    is answered, and socket errors are reported and survived: the thread only ends on
+    :meth:`stop` (or when the ZMQ context is terminated).
+    """
 
     POLL_MS = 100
 
@@ -138,6 +154,8 @@ class SceneRpc(threading.Thread):
         self._sock = sock  # created by the main thread; owned by this thread from start() on
         self._reply = encode(info)
         self._stop_event = threading.Event()
+        self.served = 0
+        self.rejected = 0
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -146,17 +164,37 @@ class SceneRpc(threading.Thread):
     def run(self) -> None:
         try:
             while not self._stop_event.is_set():
-                if not self._sock.poll(self.POLL_MS, zmq.POLLIN):
-                    continue
-                data = self._sock.recv()
                 try:
-                    decode(data, SceneRequest)
-                except ProtocolError as e:
-                    print(f"ft-sim: bad scene request ({e}); replying anyway", file=sys.stderr)
-                # REP must answer every request, or the socket wedges.
-                self._sock.send(self._reply)
+                    self._serve_one()
+                except zmq.ZMQError as e:
+                    if e.errno == zmq.ETERM:
+                        break
+                    print(f"ft-sim: scene RPC: {e}; continuing", file=sys.stderr)
+                    self._stop_event.wait(self.POLL_MS / 1000)  # no busy loop on a bad socket
         finally:
             self._sock.close(linger=0)
+
+    def _serve_one(self) -> None:
+        if not self._sock.poll(self.POLL_MS, zmq.POLLIN):
+            return
+        frames = self._sock.recv_multipart()
+        self._sock.send(self.reply_to(frames))
+
+    def reply_to(self, frames: list[bytes]) -> bytes:
+        """The reply to a request of ``frames``: the SceneInfo, or an error reply."""
+        if len(frames) != 1:
+            error = f"expected a one-frame SceneRequest, got {len(frames)} frames"
+        else:
+            try:
+                decode(frames[0], SceneRequest)
+            except ProtocolError as e:
+                error = str(e)
+            else:
+                self.served += 1
+                return self._reply
+        self.rejected += 1
+        print(f"ft-sim: bad scene request ({error}); sent an error reply", file=sys.stderr)
+        return msgspec.msgpack.encode({"v": PROTOCOL_VERSION, "error": error})
 
 
 class StatsReporter(threading.Thread):
@@ -339,7 +377,8 @@ def run(cfg: Config, realtime_factor: float = 1.0, verbose: bool = False) -> int
         dt_sim = float(sim.model.opt.timestep)
         publish = ScenePublisher(pub, nq, every)
         sim.register_post_step_callback(publish)
-        rpc = SceneRpc(rep, SceneInfo(xml=xml, nq=nq, robot_prefix=ROBOT_PREFIX))
+        info = SceneInfo(xml=xml, nq=nq, robot_prefix=ROBOT_PREFIX, robot_host=cfg.robot.host)
+        rpc = SceneRpc(rep, info)
         rpc.start()
 
         loop = SimLoop(lambda: server.run_once(False), dt_sim, realtime_factor)

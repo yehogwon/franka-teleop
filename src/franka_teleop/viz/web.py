@@ -15,7 +15,7 @@ import numpy as np
 import viser
 
 from .meshes import geom_poses, geom_rgba, model_meshes
-from .overlay import CameraSpec, box_edges, status_lines
+from .overlay import CameraSpec, box_edges, state_text, status_lines
 from .source import Source
 
 STATUS_PERIOD_S = 0.2
@@ -122,12 +122,14 @@ class WebViewer:
             self._status_md.content = self._status_text()
         return changed
 
-    def _source_text(self) -> str:
-        state = "live" if self.src.has_state else "waiting for state"
+    def _source_text(self, now: float | None = None) -> str:
+        state = state_text(self.src.has_state, self.src.state_age(now))
+        if state.startswith("STALE"):
+            state = f"**{state}**"
         return f"**source** {self.src.describe()} — {state}"
 
-    def _status_text(self) -> str:
-        rows = status_lines(self.src.status)
+    def _status_text(self, now: float | None = None) -> str:
+        rows = status_lines(self.src.status, self.src.status_age(now))
         return "| | |\n|---|---|\n" + "\n".join(f"| {k} | {v} |" for k, v in rows)
 
     def run(self, fps: float, duration: float | None = None) -> None:

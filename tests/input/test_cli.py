@@ -2,9 +2,12 @@
 
 import glob
 import os
+import pty
+import select
 import signal
 import subprocess
 import sys
+import termios
 import time
 from pathlib import Path
 
@@ -94,7 +97,7 @@ def test_ft_joystick_script_smoke(cfg_and_file):
     assert all(not m.deadman and m.linear == (0, 0, 0) for m in tail)
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT])
 def test_ft_joystick_signal_sends_neutral_tail_and_exits_0(cfg_and_file, sig):
     cfg, path = cfg_and_file
     sub = cmd_sub(cfg)
@@ -120,6 +123,105 @@ def test_ft_joystick_signal_sends_neutral_tail_and_exits_0(cfg_and_file, sig):
     assert tail[-1].t_send - tail[0].t_send >= 0.25
     assert all(not m.deadman and m.linear == (0, 0, 0) and m.angular == (0, 0, 0) for m in tail)
     assert "waiting for ft-node" in err  # HUD (not a TTY: plain lines on stderr)
+
+
+class PtyJoystick:
+    """ft-joystick --device keyboard on a pseudo-terminal, like an operator's terminal."""
+
+    def __init__(self, path, *args):
+        self.master, self.slave = pty.openpty()
+        self.before = termios.tcgetattr(self.slave)
+        self.proc = subprocess.Popen(
+            [str(BIN / "ft-joystick"), "--config", str(path), "--device", "keyboard", *args],
+            cwd=REPO,
+            stdin=self.slave,
+            stdout=self.slave,
+            stderr=self.slave,
+        )
+
+    def type(self, keys: bytes) -> None:
+        os.write(self.master, keys)
+
+    def read_output(self) -> bytes:
+        out = b""
+        while select.select([self.master], [], [], 0.05)[0]:
+            try:
+                out += os.read(self.master, 65536)
+            except OSError:
+                break
+        return out
+
+    def close(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait(5)
+        os.close(self.master)
+        os.close(self.slave)
+
+
+def pump(sub, seconds, term=None):
+    """Commands received during ``seconds`` (reading the terminal's output if ``term``)."""
+    msgs, t0 = [], time.monotonic()
+    while time.monotonic() - t0 < seconds:
+        msgs += drain(sub, timeout=0.05)
+        if term is not None:
+            term.read_output()
+    return msgs
+
+
+@pytest.mark.parametrize("sig", [signal.SIGHUP, signal.SIGQUIT])
+def test_ft_joystick_keyboard_hangup_releases_deadman_and_restores_tty(cfg_and_file, sig):
+    """Review r2: closing the terminal (SIGHUP) or Ctrl-\\ (SIGQUIT) with the keyboard deadman
+    latched ON: neutral, deadman-released tail, exit 0, terminal settings restored."""
+    cfg, path = cfg_and_file
+    sub = cmd_sub(cfg)
+    term = PtyJoystick(path, "--quiet")
+    try:
+        msgs = pump(sub, 1.5, term)
+        assert msgs and not any(m.deadman for m in msgs)
+        term.type(b" ")  # deadman ON (latched)
+        msgs += pump(sub, 0.5, term)
+        term.type(b"w")
+        msgs += pump(sub, 0.2, term)
+        assert msgs[-1].deadman and msgs[-1].linear == (1, 0, 0)
+        term.proc.send_signal(sig)
+        assert term.proc.wait(5) == 0
+        time.sleep(0.2)
+        msgs += drain(sub)
+        last_on = max(i for i, m in enumerate(msgs) if m.deadman)
+        tail = msgs[last_on + 1 :]
+        assert tail and tail[-1].t_send - tail[0].t_send >= 0.25
+        assert all(not m.deadman and m.linear == (0, 0, 0) for m in tail)
+        after = termios.tcgetattr(term.slave)
+        assert after[0] == term.before[0] and after[3] == term.before[3]  # iflag, lflag
+    finally:
+        term.close()
+        sub.close()
+
+
+def test_ft_joystick_keeps_streaming_after_ctrl_s(cfg_and_file):
+    """Review r8: Ctrl-S (XOFF) must not freeze the command loop through blocking HUD writes."""
+    cfg, path = cfg_and_file
+    sub = cmd_sub(cfg)
+    term = PtyJoystick(path)  # with the HUD
+    try:
+        pump(sub, 1.5, term)
+        term.type(b" ")  # deadman ON
+        before = pump(sub, 0.5, term)
+        assert len(before) > 30 and before[-1].deadman
+        term.type(b"\x13")  # Ctrl-S; then nobody reads the terminal for a while
+        time.sleep(0.5)
+        frozen = pump(sub, 2.0)
+        assert len(frozen) > 0.8 * 2.0 * cfg.input.rate_hz
+        assert all(m.deadman for m in frozen)  # \x13 is an ignored key, not a deadman toggle
+        term.type(b"\x11")  # Ctrl-Q
+        after = pump(sub, 0.5, term)
+        assert len(after) > 30
+        term.proc.send_signal(signal.SIGTERM)
+        assert term.proc.wait(5) == 0
+    finally:
+        term.close()
+        sub.close()
 
 
 def test_ft_joystick_keyboard_needs_a_tty(cfg_and_file):

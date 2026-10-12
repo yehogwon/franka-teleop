@@ -8,7 +8,7 @@ import time
 import mujoco
 import mujoco.viewer
 
-from .overlay import CameraSpec, add_workspace, status_lines
+from .overlay import CameraSpec, add_workspace, viewer_rows
 from .source import Source
 
 STATUS_PERIOD_S = 0.1
@@ -65,8 +65,7 @@ def run_native(
 
 
 def _overlay_text(src: Source):
-    source = src.kind + ("" if src.has_state else " (waiting for state)")
-    rows = [("source", source), *status_lines(src.status)]
+    rows = viewer_rows(src)
     labels = "\n".join(k for k, _ in rows)
     values = "\n".join(v for _, v in rows)
     return (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPLEFT, labels, values)

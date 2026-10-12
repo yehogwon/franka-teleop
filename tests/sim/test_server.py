@@ -54,6 +54,7 @@ def test_scene_info_xml_loads_and_matches_nq(ft_sim):
     model = load_model(info.xml)
     assert info.nq == model.nq == 9 + 3 * 7  # robot + three free cubes
     assert info.robot_prefix == ROBOT_PREFIX
+    assert info.robot_host == ft_sim.cfg.robot.host  # viewers check it against their config
     # A second request on a fresh socket works too (the REP loop did not wedge).
     assert request_scene_info(ft_sim.cfg).nq == info.nq
 

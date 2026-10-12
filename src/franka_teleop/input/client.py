@@ -5,8 +5,12 @@ also when idle: the stream doubles as the heartbeat the node's watchdog checks. 
 from the node drives a one-line HUD and the round-trip time (the node echoes the newest
 command's ``seq`` in ``last_cmd_seq``).
 
-On Ctrl-C / SIGTERM / end of script the client sends neutral, deadman-released commands for
-:data:`SHUTDOWN_S` before closing, so the node sees an orderly release instead of a timeout.
+On Ctrl-C / SIGTERM / SIGHUP (terminal closed, SSH session dropped) / SIGQUIT (Ctrl-\\) / end
+of script the client sends neutral, deadman-released commands for :data:`SHUTDOWN_S` before
+closing, so the node sees an orderly release instead of a timeout.
+
+The HUD never blocks the command loop: a HUD write is skipped while the terminal (or pipe)
+cannot take it, e.g. a stalled reader, and the HUD is turned off if the terminal is gone.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import argparse
 import logging
 import math
 import random
+import select
 import shutil
 import signal
 import sys
@@ -47,6 +52,21 @@ MAX_LAG_TICKS = 5
 reset instead of sending the missed ticks in a burst."""
 ERROR_RUMBLE = (1.0, 1.0, 400)
 """(low, high, ms): rumble when the node enters "error" (gamepad only)."""
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+"""Signals that stop ft-joystick the orderly way (neutral tail, terminal restored)."""
+
+
+def writable_now(stream: TextIO) -> bool:
+    """True if a short write to ``stream`` will not block: False while a terminal's output is
+    stopped (XOFF) or a pipe is full. Streams without a file descriptor never block."""
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):  # e.g. io.StringIO
+        return True
+    try:
+        return bool(select.select([], [fd], [], 0)[1])
+    except (OSError, ValueError):
+        return False
 
 
 class InputSource(Protocol):
@@ -108,6 +128,8 @@ class JoystickClient:
         self._last_echo = -1
         self._hud_t = -math.inf
         self._hud_dirty = False
+        self.hud_skipped = 0
+        """HUD writes skipped because the stream could not take them without blocking."""
         self._stop = threading.Event()
         self._closed = False
 
@@ -188,8 +210,7 @@ class JoystickClient:
             self.source.close()
         finally:
             if self.hud and self._hud_dirty:
-                self.hud_stream.write("\n")
-                self.hud_stream.flush()
+                self._hud_write("\n")
             # Give the last (neutral) commands a moment to leave the socket.
             self._pub.setsockopt(zmq.LINGER, 200)
             self._pub.close()
@@ -298,11 +319,25 @@ class JoystickClient:
         line = self.hud_line(now)
         if tty:
             width = shutil.get_terminal_size().columns - 1
-            self.hud_stream.write("\r" + line[:width] + "\x1b[K")
-            self._hud_dirty = True
+            if self._hud_write("\r" + line[:width] + "\x1b[K"):
+                self._hud_dirty = True
         else:
-            self.hud_stream.write(line + "\n")
-        self.hud_stream.flush()
+            self._hud_write(line + "\n")
+
+    def _hud_write(self, text: str) -> bool:
+        """Write and flush ``text`` unless that could block the command loop (the stream is
+        not writable right now: skipped). A broken stream (EIO after the terminal was closed)
+        turns the HUD off. True if written."""
+        if not writable_now(self.hud_stream):
+            self.hud_skipped += 1
+            return False
+        try:
+            self.hud_stream.write(text)
+            self.hud_stream.flush()
+        except OSError:
+            self.hud = False
+            return False
+        return True
 
 
 # -- CLI ---------------------------------------------------------------------------------------
@@ -422,8 +457,8 @@ def main(argv: list[str] | None = None) -> int:
     def on_signal(signum, frame):
         client.stop()
 
-    signal.signal(signal.SIGINT, on_signal)
-    signal.signal(signal.SIGTERM, on_signal)
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, on_signal)
     log.info(
         "session %d: %s -> %s at %g Hz",
         client.session,
