@@ -34,13 +34,15 @@ def _fmt_mapping(mapping: dict[str, str] | None) -> str:
     return " ".join(f"{k}:{v}" for k, v in mapping.items() if k != "crc")
 
 
-def _snapshot_lines(snap, intent) -> list[str]:
+def _snapshot_lines(snap, intent, waiting: str = "", deadman_blocked: bool = False) -> list[str]:
+    """``waiting``: the reader's status while disconnected. ``deadman_blocked``: LB is held
+    but not armed yet (not released since the pad connected)."""
     a = snap.axis
     pressed = [b for b, down in snap.buttons.items() if down]
     lin, ang = intent.linear, intent.angular
     counters = " ".join(f"{name}={intent.counters[name]}" for name in ACTIONS)
     if not snap.connected:
-        head = "pad      DISCONNECTED (waiting for it to come back)"
+        head = f"pad      DISCONNECTED ({waiting or 'waiting for it to come back'})"
     else:
         head = (
             f"pad      left ({a('leftx'):+.2f},{a('lefty'):+.2f})  "
@@ -48,11 +50,12 @@ def _snapshot_lines(snap, intent) -> list[str]:
             f"LT {a('lefttrigger'):.2f}  RT {a('righttrigger'):.2f}  "
             f"buttons: {' '.join(pressed) or '-'}"
         )
+    hint = "  (LB held since connect: release it once)" if deadman_blocked else ""
     return [
         head,
         f"intent   deadman {'ON ' if intent.deadman else 'off'}  "
         f"fwd {lin[0]:+.2f} left {lin[1]:+.2f} up {lin[2]:+.2f}  "
-        f"roll {ang[0]:+.2f} pitch {ang[1]:+.2f} yaw {ang[2]:+.2f}",
+        f"roll {ang[0]:+.2f} pitch {ang[1]:+.2f} yaw {ang[2]:+.2f}{hint}",
         f"counters {counters}",
     ]
 
@@ -114,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         while args.duration is None or time.monotonic() - start < args.duration:
             snap = reader.read()
-            lines = _snapshot_lines(snap, mapper.update(snap))
+            intent = mapper.update(snap)
+            lines = _snapshot_lines(snap, intent, reader.status(), mapper.deadman_blocked)
             if tty:
                 width = shutil.get_terminal_size().columns - 1
                 up = f"\x1b[{shown}F" if shown else ""

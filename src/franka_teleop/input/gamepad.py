@@ -138,11 +138,36 @@ def list_controllers() -> list[ControllerInfo]:
     return out
 
 
-class GamepadReader:
-    """Reads one pad (by SDL device index) into normalized :class:`GamepadSnapshot` s.
+@dataclass(frozen=True)
+class _Device:
+    """An SDL joystick device as probed: its current index and what identifies it."""
 
-    A pad that is missing or unplugged reads as ``connected=False``; the reader retries opening
-    it every ``reconnect_interval_s`` (and at once when SDL reports a new device).
+    index: int
+    guid: str
+    name: str
+    instance_id: int
+    """Unique per connection: SDL never reuses it, not even for the same pad re-plugged."""
+
+
+class GamepadReader:
+    """Reads one pad into normalized :class:`GamepadSnapshot` s.
+
+    The pad is the one found at SDL device ``index`` on the first successful open. From then on
+    the reader follows that pad, not the index: SDL renumbers devices when one is unplugged, so
+    after a dropout a different pad may sit at the same index.
+
+    A missing or unplugged pad reads as ``connected=False``; the reader retries every
+    ``reconnect_interval_s`` (and at once when SDL reports a new device) and only adopts
+
+    - the same SDL device (instance id) if it is still present (e.g. after a read error), or
+    - exactly one device with the pad's GUID and name that was not present while the pad was
+      connected. SDL never reuses instance ids, so a re-plugged pad comes back with a new one,
+      while every device that coexisted with the pad is known not to be it.
+
+    If several devices qualify it refuses to guess and logs an error. SDL cannot tell two pads
+    of the same model apart, so if an identical pad (and only that) is plugged in during the
+    dropout, it is adopted; the mapper's deadman re-arm then still needs a deliberate release
+    and press of LB on it.
     """
 
     def __init__(
@@ -154,14 +179,25 @@ class GamepadReader:
     ):
         init()
         self.index = index
+        """SDL device index the pad is first looked for at (input.gamepad_index)."""
+        self.device_index: int | None = None
+        """SDL device index of the open pad (may differ from ``index`` after a reconnect)."""
         self.reconnect_interval_s = reconnect_interval_s
         self.clock = clock
         self.name = ""
+        self.guid = ""
         self.kind: str | None = None
         """"controller" (SDL GameController), "joystick" (raw fallback) or None."""
         self._ctl: sdl_controller.Controller | None = None
         self._joy: pygame.joystick.JoystickType | None = None
         self._instance_id: int | None = None
+        self._identity: tuple[str, str] | None = None
+        """(GUID, joystick name) of the pad, fixed at the first open."""
+        self._last_instance_id: int | None = None
+        self._foreign: set[int] = set()
+        """Instance ids of devices seen while the pad was connected: never adopted."""
+        self._matches = 0
+        """Devices that qualified as the pad at the last reconnect attempt."""
         self._next_attempt = -math.inf
         self._trigger_armed: dict[str, bool] = {}
         pygame.event.pump()
@@ -174,17 +210,81 @@ class GamepadReader:
     def mapping(self) -> dict[str, str] | None:
         return self._ctl.get_mapping() if self._ctl is not None else None
 
+    def status(self) -> str:
+        """Why there is no input, for the HUD ("" while connected)."""
+        if self.connected:
+            return ""
+        if self._identity is None:
+            return f"NO GAMEPAD (index {self.index})"
+        if self._matches > 1:
+            return (
+                f"NO GAMEPAD: {self._matches} pads look like your {self.name!r}; cannot tell "
+                "which is yours (unplug the others)"
+            )
+        return f"NO GAMEPAD: waiting for your {self.name!r} to come back (other pads ignored)"
+
+    def _probe_all(self) -> list[_Device]:
+        """Every SDL joystick device now present (one ``get_count`` call)."""
+        devices = []
+        for i in range(pygame.joystick.get_count()):
+            try:
+                joy = pygame.joystick.Joystick(i)
+            except pygame.error:
+                continue
+            try:
+                devices.append(_Device(i, joy.get_guid(), joy.get_name(), joy.get_instance_id()))
+            except pygame.error:
+                pass
+            finally:
+                # pygame returns its existing object for a device that is already open: for a
+                # raw-joystick pad that is the reader's own, and quit() would close it.
+                if joy is not self._joy:
+                    with contextlib.suppress(pygame.error):
+                        joy.quit()
+        return devices
+
+    def _note_foreign(self) -> None:
+        """A device appeared while the pad is connected: it is not the pad, now or later."""
+        self._foreign.update(
+            d.instance_id for d in self._probe_all() if d.instance_id != self._instance_id
+        )
+
+    def _choose(self, devices: list[_Device]) -> _Device | None:
+        if self._identity is None:  # first open: whatever is at the configured index
+            return next((d for d in devices if d.index == self.index), None)
+        for d in devices:
+            if d.instance_id == self._last_instance_id:
+                return d
+        matches = [
+            d
+            for d in devices
+            if (d.guid, d.name) == self._identity and d.instance_id not in self._foreign
+        ]
+        if len(matches) > 1 and len(matches) != self._matches:
+            log.error(
+                "%d gamepads look like the one in use (%r, GUID %s), at indices %s; not "
+                "adopting any of them. Unplug the others.",
+                len(matches),
+                self.name,
+                self.guid,
+                [d.index for d in matches],
+            )
+        self._matches = len(matches)
+        return matches[0] if len(matches) == 1 else None
+
     def _try_open(self) -> bool:
         self._next_attempt = self.clock() + self.reconnect_interval_s
-        if pygame.joystick.get_count() <= self.index:
+        devices = self._probe_all()
+        dev = self._choose(devices)
+        if dev is None:
             return False
         try:
-            if sdl_controller.is_controller(self.index):
-                ctl = sdl_controller.Controller(self.index)
+            if sdl_controller.is_controller(dev.index):
+                ctl = sdl_controller.Controller(dev.index)
                 self._instance_id = ctl.as_joystick().get_instance_id()
                 self._ctl, self.kind, self.name = ctl, "controller", ctl.name
             else:
-                joy = pygame.joystick.Joystick(self.index)
+                joy = pygame.joystick.Joystick(dev.index)
                 self._instance_id = joy.get_instance_id()
                 self._joy, self.kind, self.name = joy, "joystick", joy.get_name()
                 self._trigger_armed = dict.fromkeys(TRIGGER_AXES, False)
@@ -193,13 +293,21 @@ class GamepadReader:
                     "layout. Check every axis with ft-check-joystick, or provide a mapping via "
                     "SDL_GAMECONTROLLERCONFIG.",
                     self.name,
-                    joy.get_guid(),
+                    dev.guid,
                 )
         except pygame.error as e:
-            log.warning("cannot open gamepad %d: %s", self.index, e)
+            log.warning("cannot open gamepad %d: %s", dev.index, e)
             self._close_device()
             return False
-        log.info("gamepad %d connected: %s (%s)", self.index, self.name, self.kind)
+        self.device_index = dev.index
+        self._matches = 1
+        if self._identity is None:
+            self._identity = (dev.guid, dev.name)
+            self.guid = dev.guid
+            self._foreign = {d.instance_id for d in devices if d.instance_id != dev.instance_id}
+            log.info("gamepad %d connected: %s (%s)", dev.index, self.name, self.kind)
+        else:
+            log.info("gamepad %r is back (now index %d)", self.name, dev.index)
         return True
 
     def _close_device(self) -> None:
@@ -210,22 +318,32 @@ class GamepadReader:
         self._ctl = self._joy = None
         self.kind = None
         self._instance_id = None
+        self.device_index = None
 
     def _disconnected(self) -> GamepadSnapshot:
         if self.connected:
-            log.warning("gamepad %d disconnected: %s", self.index, self.name)
+            log.warning(
+                "gamepad %r disconnected; waiting for it to come back (other pads are ignored)",
+                self.name,
+            )
+            self._last_instance_id = self._instance_id
             self._close_device()
             self._next_attempt = self.clock() + self.reconnect_interval_s
         return GamepadSnapshot.disconnected(self.name)
 
     def read(self) -> GamepadSnapshot:
         """Pump SDL events, handle hot-plugging, and return the current state."""
-        removed = False
+        removed = added = changed = False
         for ev in pygame.event.get():
-            if ev.type in _DEVICE_REMOVED and self.connected:
-                removed |= getattr(ev, "instance_id", None) == self._instance_id
-            elif ev.type in _DEVICE_ADDED and not self.connected:
-                self._next_attempt = -math.inf
+            if ev.type in _DEVICE_REMOVED:
+                changed = True
+                removed |= self.connected and getattr(ev, "instance_id", None) == self._instance_id
+            elif ev.type in _DEVICE_ADDED:
+                changed = added = True
+        if added and self.connected:
+            self._note_foreign()
+        elif changed and not self.connected:
+            self._next_attempt = -math.inf  # the device list changed: look again now
         if removed or (self._ctl is not None and not self._ctl.attached()):
             return self._disconnected()
         if not self.connected and (self.clock() < self._next_attempt or not self._try_open()):
@@ -305,7 +423,9 @@ class GamepadSource:
 
     def status(self) -> str:
         if not self.snapshot.connected:
-            return f"NO GAMEPAD (index {self.reader.index})"
+            return self.reader.status() or "NO GAMEPAD"
+        if self.mapper.deadman_blocked:
+            return "LB held since the pad connected: release it to arm the deadman"
         return ""
 
     def close(self) -> None:
