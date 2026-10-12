@@ -58,6 +58,7 @@ class TeleopNode:
         self.moving = False  # a velocity motion we started may still be running
         self.sent_nonzero = False  # the last twist sent was non-zero
         self.homing_started = False
+        self.joint_motion = False  # a joint (or joint stop) motion may still be running
         self.twist = np.zeros(6)
         self.limiters: tuple[str, ...] = ()
         self.status_seq = 0
@@ -99,18 +100,20 @@ class TeleopNode:
             age = self.cmd_age_ms(now)
             fresh = self.last_cmd is not None and age <= self.cfg.teleop.cmd_timeout_ms
             deadman = fresh and self.last_cmd.deadman
-            if fresh and not self.last_cmd.deadman and self.mode not in (ERROR, LOCKED):
-                self.armed = True
             if age > REARM_AFTER_STALE_MS:
                 self.armed = False
             if fresh and self.message == STALE_MESSAGE:
                 self.message = "operator stream resumed"
-            if self.moving and not s.in_control:
-                self.moving = self.sent_nonzero = False
+            if not s.in_control:
+                self.moving = self.sent_nonzero = self.joint_motion = False
 
             if (s.errors or s.robot_mode == "Reflex") and self.mode != ERROR:
                 self._enter_error(f"robot error: {', '.join(s.errors) or s.robot_mode}")
             self._handle_events(events if fresh else set(), deadman, s)
+            # Arm on an observed release; after the events, so that a release sent together
+            # with "recover" counts.
+            if fresh and not self.last_cmd.deadman and self.mode not in (ERROR, LOCKED):
+                self.armed = True
 
             if self.mode == HOMING:
                 self._step_homing(deadman, s)
@@ -173,6 +176,12 @@ class TeleopNode:
             if not fresh and self.last_cmd is not None:
                 self.message = STALE_MESSAGE
             return
+        if self.joint_motion:
+            # A joint motion (e.g. an aborted homing's stop motion) is still decelerating, and
+            # franky cannot switch motion types mid-motion: wait for it to end.
+            self.mode, self.twist, self.limiters = IDLE, np.zeros(6), ()
+            self.message = "waiting for the arm to stop"
+            return
         cmd = self.last_cmd
         tc = self.cfg.teleop
         scale = tc.speed_levels[self.speed_level]
@@ -215,7 +224,7 @@ class TeleopNode:
                     self.sent_nonzero = False
                 return  # wait for the velocity motion to come to rest
             self.arm.move_joints(self.cfg.robot.home_q)
-            self.homing_started, self.moving = True, False
+            self.homing_started, self.moving, self.joint_motion = True, False, True
             return
         if self.arm.motion_finished():
             self.mode, self.message, self.armed = IDLE, "home reached; release the deadman", False

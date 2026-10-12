@@ -190,6 +190,35 @@ def test_releasing_deadman_aborts_homing():
     assert s.mode == IDLE and "aborted" in s.message and rig.count("halt") == 1
 
 
+def test_reengaging_while_a_joint_stop_decelerates_waits_instead_of_faulting():
+    """Found by the soak test: abort homing (a joint stop motion starts decelerating), re-engage
+    at once and push a stick. A velocity motion must not be sent until the joint motion ended,
+    or franky raises 'motion type change while moving'."""
+    rig = Rig()
+    rig.engage()
+    rig.step(rig.op.cmd(deadman=True, press=("home",)))
+    rig.run(0.1, deadman=True)
+    assert rig.count("move_joints") == 1
+    rig.run(0.02, deadman=False)  # abort: joint stop motion now decelerating for 0.2 s
+    s = rig.run(0.05, deadman=True, linear=(1, 0, 0))
+    assert s.mode != "error" and rig.twists() == [] and "waiting" in s.message
+    s = rig.run(0.3, deadman=True, linear=(1, 0, 0))
+    assert s.mode == TELEOP and rig.twists()
+
+
+def test_unlocking_during_a_joint_stop_waits_too():
+    rig = Rig()
+    rig.engage()
+    rig.step(rig.op.cmd(deadman=True, press=("home",)))
+    rig.run(0.1, deadman=True)
+    rig.step(rig.op.cmd(deadman=True, press=("stop",)))  # joint stop motion, locked
+    rig.step(rig.op.cmd(deadman=False, press=("recover",)))
+    s = rig.run(0.05, deadman=True, linear=(0, 1, 0))
+    assert s.mode != "error" and rig.twists() == []
+    s = rig.run(0.3, deadman=True, linear=(0, 1, 0))
+    assert s.mode == TELEOP and rig.twists()
+
+
 def test_robot_error_latches_until_recover_and_requires_rearm():
     rig = Rig()
     rig.engage()

@@ -27,6 +27,7 @@ class FakeArm:
         O_T_EE: np.ndarray = READY_EE,
         accel: float = 2.0,
         joint_motion_s: float = 0.5,
+        joint_stop_s: float = 0.2,
     ):
         self.clock = clock
         self.q = np.array(q0, dtype=float)
@@ -34,6 +35,8 @@ class FakeArm:
         self.v = np.zeros(6)
         self.accel = accel
         self.joint_motion_s = joint_motion_s
+        self.joint_stop_s = joint_stop_s
+        self._joint_stop_until: float | None = None
         self._t = clock()
         self._target = np.zeros(6)
         self._hold_until = -math.inf
@@ -65,11 +68,16 @@ class FakeArm:
             if now > self._hold_until and not self.v.any():
                 self._mode = None
         elif self._mode == "joint":
-            t0, q0 = self._joint_start
-            s = min(1.0, (now - t0) / self.joint_motion_s)
-            self.q = q0 + s * (self._joint_goal - q0)
-            if s >= 1.0:
-                self._mode = None
+            if self._joint_stop_until is not None:
+                # A joint stop motion decelerates for a while; the motion type stays "joint".
+                if now >= self._joint_stop_until:
+                    self._mode, self._joint_stop_until = None, None
+            else:
+                t0, q0 = self._joint_start
+                s = min(1.0, (now - t0) / self.joint_motion_s)
+                self.q = q0 + s * (self._joint_goal - q0)
+                if s >= 1.0:
+                    self._mode = None
         self.gripper_width = 0.0 if self.gripper_closed else 0.08
 
     # -- Arm protocol --------------------------------------------------------------------------
@@ -107,8 +115,8 @@ class FakeArm:
         self.calls.append(("halt", None))
         if self._mode == "velocity":
             self._target = np.zeros(6)
-        elif self._mode == "joint":
-            self._mode = None
+        elif self._mode == "joint" and self._joint_stop_until is None:
+            self._joint_stop_until = self._t + self.joint_stop_s
 
     def stop(self) -> None:
         self._advance()
@@ -124,6 +132,7 @@ class FakeArm:
         if self._mode == "velocity":
             raise ArmError("motion type change while moving")
         self._mode = "joint"
+        self._joint_stop_until = None
         self._joint_goal = np.array(q, dtype=float)
         self._joint_start = (self._t, self.q.copy())
 
