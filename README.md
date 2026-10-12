@@ -117,7 +117,10 @@ tests (`tests/node`).
 - **Robot-side watchdog.** Each velocity target is held by franky for at most `teleop.hold_ms`
   (100 ms), so the arm stops by itself even if `ft-node` dies.
 - **Limiters.** Each one restricts only motion *towards* a boundary, so you can always back out:
-  - *workspace box*: outward velocity ramps to zero at the walls;
+  - *workspace box*: outward velocity of the TCP ramps to zero at the walls;
+  - *floor guard*: the box only constrains the TCP, and a hand tilted past horizontal puts the
+    wrist below it. The elbow and wrist joint frames, the flange and the hand-body corners are
+    kept above `workspace.floor` plus a clearance, using the robot's kinematic model;
   - *singularity guard*: motion that lowers the smallest singular value of the (rotation-weighted)
     Jacobian slows and stops before Cartesian tracking breaks down at the edge of reach. It uses
     the robot's own kinematic model;
@@ -126,6 +129,12 @@ tests (`tests/node`).
   - default joint limits are the **intersection of FR3 and Panda limits**, valid for either arm.
 - **Errors** (reflexes) latch until START. Error recovery is franky's automatic recovery.
 - **One controller.** `ft-joystick` binds the command port, so a second joystick fails to start.
+- **No orphans.** When the session stops, through any of Ctrl-C, SIGTERM, a closed terminal
+  (SIGHUP) or a child crashing, `ft-teleop` shuts down in order and halts the arm before
+  disconnecting. If the launcher itself is killed, the kernel sends its children SIGTERM.
+- **Sanity checks on the config.** A config with `sim.enabled` must point at a loopback
+  address, so keyboard and script input can never reach a real arm by accident.
+  `teleop.hold_ms` is capped at 250 ms. Commands with non-finite values are dropped.
 
 Measured against franky-sim (`tests/node/test_node_sim.py`, sim in a separate process):
 
@@ -140,10 +149,13 @@ Measured against franky-sim (`tests/node/test_node_sim.py`, sim in a separate pr
 | workspace walls (4 directions, full speed) | 0 mm overshoot |
 | singularity (reaching out and up) | σ ≥ 0.035, tracking error ≤ 5 mm/s |
 | wrist joint driven into its limit | stops ≥ 26 mrad short |
+| hand rolled over 15 cm above the table | wrist and hand stay clear of it |
 
 A randomized operator soak (`tests/node/test_soak.py`; random sticks, deadman, speed, frame,
 gripper, home, stop/recover) checks every status message: no robot errors, the workspace is
-never left, no joint limit is crossed, and σ stays above the stop threshold.
+never left, no joint limit is crossed, and σ stays above the stop threshold. The soak is how the
+wrist-on-table gap was found. The soak and two independent code reviews also found the other
+failure modes listed above; each now has a regression test.
 
 The software deadman is **not** an emergency stop. Keep the Franka external enabling/emergency
 stop device in hand whenever the real arm is powered.
@@ -204,10 +216,11 @@ you are most likely to change:
 | Key | Meaning |
 |---|---|
 | `robot.host` | FCI address of the arm (sim: loopback address franky-sim binds) |
-| `robot.dynamics_factor` | franky's scale on velocity/acceleration/jerk limits (default 0.2) |
+| `robot.dynamics_factor` | franky's scale on acceleration/jerk limits (default 0.2). Operator speed is capped by `teleop.max_*_speed` |
 | `teleop.max_linear_speed`, `max_angular_speed`, `speed_levels` | operator speed at full stick |
 | `teleop.operator_yaw_deg` | where the operator stands |
-| `workspace.lower` / `upper` | end-effector box in the base frame [m] |
+| `workspace.lower` / `upper` | TCP box in the base frame [m] |
+| `workspace.floor`, `link_clearance`, `hand_clearance` | table height and how far the wrist and hand stay above it |
 | `joint_guard.*` | joint-limit and singularity guard tuning |
 | `input.deadzone`, `expo`, `invert` | stick feel and axis inversion |
 | `net.*_port` | ZMQ ports (publishers bind on `bind_host`, subscribers connect to `connect_host`) |
@@ -251,6 +264,9 @@ against franky-sim on a loopback address.
   kinematic fake arm that raises them.
 - **Homing ignores the workspace box.** Homing moves in joint space. Keep holding the deadman
   and watch the arm.
+- **The floor guard models only the Franka Hand.** It uses the Franka Hand's outline
+  (`HAND_POINTS` in `node/limits.py`) and assumes a flat table at `workspace.floor`. It knows
+  nothing about other obstacles. For other tools, change `HAND_POINTS`.
 - **Singularity thresholds come from the simulator.** `sigma_slow`/`sigma_stop` were tuned where
   franky-sim's Cartesian tracking breaks down. Check them on the real arm at low speed.
 - **Not tested on real hardware.** A physical gamepad's trigger ranges and rumble, a PREEMPT_RT

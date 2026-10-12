@@ -100,6 +100,8 @@ def test_randomized_operator_soak(franky_sim_proc, record_property):
             twist=np.array([s.twist for s in statuses]),
             mode=np.array([s.mode for s in statuses]),
             limiters=np.array(["|".join(s.limiters) for s in statuses]),
+            message=np.array([s.message for s in statuses]),
+            t=np.array([s.t for s in statuses]),
         )
     assert len(statuses) > SOAK_S * 50
     worst_i = 0
