@@ -60,6 +60,8 @@ class FrankyArm:
                 cfg.collision_torque_thresholds, cfg.collision_force_thresholds
             )
         )
+        self._motion_kind: str | None = None  # "velocity" | "joint": type of the last motion
+        self._F_T_EE = self._EE_T_K = None
         self._gripper: _GripperWorker | None = None
         if cfg.gripper:
             self._gripper = _GripperWorker(
@@ -72,6 +74,7 @@ class FrankyArm:
     def read(self) -> ArmState:
         s = call(lambda: self.robot.state)
         jac = np.asarray(self.robot.model.zero_jacobian(franky.Frame.EndEffector, s), dtype=float)
+        self._F_T_EE, self._EE_T_K = s.F_T_EE, s.EE_T_K
         g = self._gripper
         return ArmState(
             t=s.time.to_sec(),
@@ -87,6 +90,14 @@ class FrankyArm:
             extra={"gripper_error": g.last_error if g else ""},
         )
 
+    def jacobian_at(self, q: np.ndarray) -> np.ndarray:
+        if self._F_T_EE is None:
+            self.read()
+        jac = self.robot.model.zero_jacobian(
+            franky.Frame.EndEffector, np.asarray(q, dtype=float), self._F_T_EE, self._EE_T_K
+        )
+        return np.asarray(jac, dtype=float)
+
     # -- motion ------------------------------------------------------------------------------
 
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
@@ -96,6 +107,24 @@ class FrankyArm:
             duration=franky.Duration(int(hold_ms)),
         )
         call(lambda: self.robot.move(motion, asynchronous=True))
+        self._motion_kind = "velocity"
+
+    def halt(self) -> None:
+        if not self.robot.is_in_control:
+            return
+        if self._motion_kind == "velocity":
+            motion = franky.CartesianVelocityStopMotion()
+        elif self._motion_kind == "joint":
+            motion = franky.JointStopMotion()
+        else:
+            return
+        try:
+            call(lambda: self.robot.move(motion, asynchronous=True))
+        except ArmError as e:
+            # The motion may have finished between the check and the call.
+            if self.robot.is_in_control:
+                raise
+            log.debug("halt after motion end: %s", e)
 
     def stop(self) -> None:
         call(self.robot.stop)
@@ -108,6 +137,7 @@ class FrankyArm:
     def move_joints(self, q: Sequence[float]) -> None:
         motion = franky.JointMotion(franky.JointState(list(map(float, q))))
         call(lambda: self.robot.move(motion, asynchronous=True))
+        self._motion_kind = "joint"
 
     def motion_finished(self) -> bool:
         try:

@@ -98,3 +98,20 @@ def test_gripper_close_and_open(arm):
 
 def test_recover_succeeds(arm):
     assert arm.recover()
+
+
+def test_halt_decelerates_velocity_and_joint_motions(arm):
+    arm.send_twist(np.array([0.05, 0, 0, 0, 0, 0]), hold_ms=5000)
+    time.sleep(0.3)
+    arm.halt()
+    assert wait_until(arm.motion_finished, 1.0)
+    s = arm.read()
+    assert s.errors == () and np.abs(s.dq).max() < 0.02
+    arm.move_joints([0.3, -0.5, 0.0, -2.2, 0.0, 1.8, 0.785])
+    time.sleep(0.3)
+    arm.halt()
+    assert wait_until(arm.motion_finished, 2.0)
+    q_stop = arm.read().q
+    time.sleep(0.5)
+    assert np.abs(arm.read().q - q_stop).max() < 0.02  # stays put, did not continue to the goal
+    arm.halt()  # idle: no-op

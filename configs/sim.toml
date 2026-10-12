@@ -47,14 +47,19 @@ allowed_sources = ["gamepad"]  # keyboard/script are added automatically when si
 
 [workspace]
 # End-effector box in the robot base frame [m]. Measure your table before the first real run.
-lower = [0.25, -0.45, 0.03]
-upper = [0.80, 0.45, 0.75]
+lower = [0.25, -0.40, 0.03]
+upper = [0.70, 0.40, 0.70]
 slow_zone = 0.05
 
 [joint_guard]
-margin = 0.2                # rad: joint speed towards a limit ramps to zero over this distance
-max_joint_speed = 1.0       # rad/s: twist is scaled down above this (near singularities)
-damping = 0.05
+margin = 0.2                # rad: joint speed towards a limit ramps to zero over this distance,
+clearance = 0.03            # rad: ... reaching zero this far before the limit
+max_joint_speed = 1.0       # rad/s: twist is scaled down above this predicted joint speed
+damping = 0.05              # damping of the pseudo-inverse used for predictions
+sigma_slow = 0.06           # singularity guard: slow motion that lowers the Jacobian's smallest
+sigma_stop = 0.035          #   singular value below sigma_slow, stop at sigma_stop
+rot_weight = 0.2            # m: weight of rotational Jacobian rows in that singular value
+probe_rad = 0.002           # rad: joint-space probe step of the singularity guard
 
 [input]
 device = "gamepad"

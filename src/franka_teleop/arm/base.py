@@ -52,13 +52,23 @@ class Arm(Protocol):
         """Current state. One libfranka state read (~1 ms)."""
         ...
 
+    def jacobian_at(self, q: np.ndarray) -> np.ndarray:
+        """6x7 zero Jacobian of the end effector at configuration q (the robot's own model)."""
+        ...
+
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
         """Stream a base-frame twist (vx, vy, vz, wx, wy, wz). Preempts the previous velocity
         target; the robot holds it for hold_ms and then decelerates to rest by itself."""
         ...
 
+    def halt(self) -> None:
+        """Decelerate the current motion to rest within the dynamics limits (non-blocking).
+        Uses a stop motion of the running motion's type, so it is legal mid-motion."""
+        ...
+
     def stop(self) -> None:
-        """Abort the current motion. Swallows the expected 'preempted' error."""
+        """Abort the current motion immediately. Swallows the expected 'preempted' error.
+        Prefer halt(); this is for shutdown."""
         ...
 
     def move_joints(self, q: Sequence[float]) -> None:

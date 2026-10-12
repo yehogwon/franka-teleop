@@ -88,6 +88,9 @@ class FakeArm:
             gripper_width=self.gripper_width,
         )
 
+    def jacobian_at(self, q: np.ndarray) -> np.ndarray:
+        return FAKE_JACOBIAN.copy()
+
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
         self._advance()
         self.calls.append(("send_twist", np.array(twist, dtype=float)))
@@ -98,6 +101,14 @@ class FakeArm:
         self._mode = "velocity"
         self._target = np.array(twist, dtype=float)
         self._hold_until = self._t + hold_ms / 1000.0
+
+    def halt(self) -> None:
+        self._advance()
+        self.calls.append(("halt", None))
+        if self._mode == "velocity":
+            self._target = np.zeros(6)
+        elif self._mode == "joint":
+            self._mode = None
 
     def stop(self) -> None:
         self._advance()

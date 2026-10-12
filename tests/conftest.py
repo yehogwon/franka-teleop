@@ -78,6 +78,30 @@ def franky_sim():
 
 
 @pytest.fixture
+def franky_sim_proc():
+    """franky-sim in a separate process (like deployment). Yields its loopback host."""
+    import subprocess
+    import sys
+
+    host = free_loopback_host()
+    proc = subprocess.Popen(
+        [sys.executable, str(Path(__file__).parent / "franky_sim_proc.py"), host],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        line = proc.stdout.readline()
+        assert line.strip() == "ready", f"franky-sim failed to start: {line!r}"
+        yield host
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+@pytest.fixture
 def test_config():
     return make_test_config
 

@@ -106,8 +106,8 @@ class TeleopConfig(_Base):
 
 
 class WorkspaceConfig(_Base):
-    lower: list[float] = msgspec.field(default_factory=lambda: [0.25, -0.45, 0.03])
-    upper: list[float] = msgspec.field(default_factory=lambda: [0.80, 0.45, 0.75])
+    lower: list[float] = msgspec.field(default_factory=lambda: [0.25, -0.40, 0.03])
+    upper: list[float] = msgspec.field(default_factory=lambda: [0.70, 0.40, 0.70])
     """Axis-aligned box (robot base frame, metres) the end effector may not leave."""
     slow_zone: float = 0.05
     """Outward velocity is ramped to zero over this distance from a wall."""
@@ -115,11 +115,23 @@ class WorkspaceConfig(_Base):
 
 class JointGuardConfig(_Base):
     margin: float = 0.2
-    """Joint velocity towards a limit is ramped to zero over this distance [rad]."""
+    """Joint velocity towards a limit is ramped to zero over this distance [rad]..."""
+    clearance: float = 0.03
+    """...ending this far before the limit [rad], to absorb tracking lag."""
     max_joint_speed: float = 1.0
-    """Twist is scaled down when the predicted joint speed exceeds this [rad/s] (singularities)."""
+    """Twist is scaled down when the predicted joint speed exceeds this [rad/s]."""
     damping: float = 0.05
     """Damping of the pseudo-inverse used to predict joint velocities."""
+    sigma_slow: float = 0.06
+    """Singularity guard: below this smallest singular value of the weighted Jacobian, motion
+    that decreases it is slowed..."""
+    sigma_stop: float = 0.035
+    """...and stopped at this value. Cartesian tracking breaks down near 0.025 (elbow straight)."""
+    rot_weight: float = 0.2
+    """Weight [m] of the rotational Jacobian rows, so sigma has units of metres per radian."""
+    probe_rad: float = 0.002
+    """Joint-space step [rad] probing whether the twist lowers sigma. Kept small: near a
+    singularity predicted joint speeds are large, and a long horizon would step across it."""
 
 
 class InputConfig(_Base):
@@ -164,6 +176,10 @@ class Config(_Base):
         _check(len(self.robot.collision_force_thresholds) == 6, "need 6 force thresholds")
         _check(len(self.sim.initial_q) == 7, "sim.initial_q needs 7 values")
         _check(len(self.workspace.lower) == 3 and len(self.workspace.upper) == 3, "workspace is 3D")
+        jg = self.joint_guard
+        _check(0 < jg.sigma_stop < jg.sigma_slow, "need 0 < joint_guard.sigma_stop < sigma_slow")
+        _check(jg.margin > 0 and jg.clearance >= 0, "joint_guard.margin/clearance invalid")
+        _check(0 < jg.probe_rad <= 0.05, "joint_guard.probe_rad must be in (0, 0.05]")
         _check(
             all(lo < hi for lo, hi in zip(self.workspace.lower, self.workspace.upper, strict=True)),
             "workspace.lower must be below workspace.upper",
