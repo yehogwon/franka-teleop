@@ -12,8 +12,10 @@ from franka_teleop.config import (
     Config,
     ConfigError,
     config_diff,
+    dump_toml,
     flatten,
     load_config,
+    write_config,
 )
 
 from .conftest import CONFIGS
@@ -87,3 +89,10 @@ def test_allowed_sources_extend_only_in_sim():
 def test_invalid_configs_are_rejected(override):
     with pytest.raises(ConfigError):
         load_config(CONFIGS / "sim.toml", **override)
+
+
+def test_dump_toml_roundtrips(tmp_path):
+    cfg = load_config(CONFIGS / "sim.toml", robot__host="127.3.4.5", input__invert=["ang_y"])
+    path = write_config(cfg, tmp_path / "effective.toml")
+    assert load_config(path) == cfg
+    assert dump_toml(cfg) == path.read_text()

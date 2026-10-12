@@ -7,6 +7,7 @@ that a session rehearsed in simulation runs unchanged against the real robot.
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from pathlib import Path
@@ -243,6 +244,35 @@ def flatten(cfg: Config) -> dict[str, Any]:
 
     walk("", msgspec.to_builtins(cfg))
     return out
+
+
+def dump_toml(cfg: Config) -> str:
+    """Serialize a config to TOML (round-trips through load_config)."""
+
+    def value(v: Any) -> str:
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, str):
+            return json.dumps(v)
+        if isinstance(v, (int, float)):
+            return repr(v)
+        if isinstance(v, list):
+            return "[" + ", ".join(value(x) for x in v) + "]"
+        raise TypeError(f"cannot write {v!r} to TOML")
+
+    lines: list[str] = []
+    for section, fields in msgspec.to_builtins(cfg).items():
+        lines.append(f"[{section}]")
+        lines += [f"{k} = {value(v)}" for k, v in fields.items()]
+        lines.append("")
+    return "\n".join(lines)
+
+
+def write_config(cfg: Config, path: str | os.PathLike) -> Path:
+    """Write the effective config, e.g. for child processes started by a launcher or test."""
+    path = Path(path)
+    path.write_text(dump_toml(cfg))
+    return path
 
 
 def config_diff(a: Config, b: Config) -> set[str]:

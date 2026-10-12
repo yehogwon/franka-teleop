@@ -80,3 +80,14 @@ def franky_sim():
 @pytest.fixture
 def test_config():
     return make_test_config
+
+
+@pytest.fixture
+def config_file(tmp_path):
+    """Write a Config to a TOML file and return its path (for --config of ft-* subprocesses)."""
+    from franka_teleop.config import write_config
+
+    def _write(cfg: Config, name: str = "config.toml"):
+        return write_config(cfg, tmp_path / name)
+
+    return _write
