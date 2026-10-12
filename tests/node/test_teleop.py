@@ -420,20 +420,33 @@ def test_frame_toggle_is_refused_while_moving():
     assert s.frame == "tool"
 
 
-def test_planner_rejection_halts_and_rearms_without_latching_error():
+def test_single_planner_rejection_is_retried_transparently():
     rig = Rig()
     rig.engage()
     rig.run(0.2, deadman=True, linear=(1, 0, 0))
     rig.arm.planner_fail_next = True
     s = rig.step(rig.op.cmd(deadman=True, linear=(1, 0, 0)))
-    assert s.mode == IDLE and "motion planner failed" in s.message and "release" in s.message
-    assert rig.count("recover") == 0 and rig.node.planner_rejections == 1
+    assert "retrying" in s.message and rig.node.planner_rejections == 1
+    n = len(rig.twists())
+    s = rig.run(0.1, deadman=True, linear=(1, 0, 0))
+    assert s.mode == TELEOP and len(rig.twists()) > n  # motion resumed without a release
+    assert rig.count("halt") == 0 and rig.count("recover") == 0
+
+
+def test_repeated_planner_rejections_halt_and_require_release():
+    rig = Rig()
+    rig.engage()
+    rig.run(0.2, deadman=True, linear=(1, 0, 0))
+    for _ in range(3):
+        rig.arm.planner_fail_next = True
+        s = rig.step(rig.op.cmd(deadman=True, linear=(1, 0, 0)))
+        rig.step(rig.op.cmd(deadman=True, linear=(1, 0, 0)))
+    assert s.mode == IDLE and "repeatedly" in s.message and rig.count("halt") == 1
     n = len(rig.twists())
     rig.run(0.2, deadman=True, linear=(1, 0, 0))
-    assert len(rig.twists()) == n  # disarmed: needs a release
+    assert len(rig.twists()) == n  # disarmed
     rig.engage()
-    s = rig.run(0.1, deadman=True, linear=(1, 0, 0))
-    assert s.mode == TELEOP and len(rig.twists()) > n
+    assert rig.run(0.1, deadman=True, linear=(1, 0, 0)).mode == TELEOP
 
 
 def test_planner_rejection_with_robot_error_latches_error():

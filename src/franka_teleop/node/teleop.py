@@ -47,6 +47,8 @@ STALE_MESSAGE = "operator stream stale"
 # Twist components below these are sent as exactly zero. A twist the limiters scaled almost to
 # nothing means "stop"; streaming creeping near-zero targets also exposed a numerical failure in
 # franky's planner (Motion planner failed, code -110) during the randomized soak.
+PLANNER_MAX_REJECTIONS = 3  # within PLANNER_WINDOW_S: halt and require a deadman release
+PLANNER_WINDOW_S = 2.0
 LINEAR_DEADBAND = 1e-3  # m/s
 ANGULAR_DEADBAND = 5e-3  # rad/s
 
@@ -65,6 +67,7 @@ class TeleopNode:
         self.gripper_closed: bool | None = None
         self.gripper_error = ""
         self.planner_rejections = 0
+        self.planner_times: list[float] = []
         self.session = 0
         self.counters: dict[str, int] = {}
         self.last_seq = -1
@@ -147,28 +150,35 @@ class TeleopNode:
             else:
                 self.twist, self.limiters = np.zeros(6), ()
         except ArmPlannerError as e:
-            self._planner_rejected(e)
+            self._planner_rejected(e, now)
         except ArmError as e:
             self._enter_error(f"arm error: {e}")
         return self._status(now)
 
-    def _planner_rejected(self, e: ArmPlannerError) -> None:
-        """franky refused a motion without a robot fault: bring the arm to rest and wait for a
-        deadman release instead of latching the error mode."""
+    def _planner_rejected(self, e: ArmPlannerError, now: float) -> None:
+        """franky's planner aborted a motion inside its control loop (seen at near-zero speeds
+        when a target keeps changing by tiny amounts). The robot reports no fault and the motion
+        has ended, so the next tick simply starts a new one. Repeated rejections bring the arm to
+        rest and wait for a deadman release; a robot error still latches the error mode."""
         self.planner_rejections += 1
+        self.planner_times = [t for t in self.planner_times if now - t < PLANNER_WINDOW_S]
+        self.planner_times.append(now)
+        self.moving = self.sent_nonzero = False
         try:
-            self._halt()
             errors = self.arm.read().errors
+            if errors:
+                self._enter_error(f"robot error: {', '.join(errors)}")
+                return
+            if len(self.planner_times) < PLANNER_MAX_REJECTIONS:
+                self.message = f"{e} (retrying)"
+                return
+            self._halt()
         except ArmError as e2:
             self._enter_error(f"arm error after planner failure: {e2}")
             return
-        if errors:
-            self._enter_error(f"robot error: {', '.join(errors)}")
-            return
-        self.mode, self.armed = IDLE, False
+        self.mode, self.armed, self.homing_started = IDLE, False, False
         self.twist, self.limiters = np.zeros(6), ()
-        self.homing_started = False
-        self.message = f"{e}; arm halted, release the deadman"
+        self.message = f"{e}, repeatedly; arm halted, release the deadman"
 
     def _handle_events(self, events: set[str], deadman: bool, s: ArmState) -> None:
         if "stop" in events and self.mode != LOCKED:

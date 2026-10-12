@@ -225,7 +225,10 @@ def test_workspace_walls_hold_in_closed_loop(rig, axis, sign, start, record_prop
     record_property(f"overshoot_axis{axis}_{sign:+d}_mm", worst * 1e3)
     assert worst < 2e-3, f"overshoot {worst * 1e3:.2f} mm"
     gap = abs(s.ee_pos[axis] - wall)
-    assert gap < 0.01, f"stopped {gap * 1e3:.1f} mm short of the wall, limiters {s.limiters}"
+    assert gap < 0.01, (
+        f"stopped {gap * 1e3:.1f} mm short of the wall, limiters {s.limiters}, mode {s.mode}, "
+        f"message {s.message!r}"
+    )
     assert s.limiters == ("workspace",) and s.robot_errors == ""
 
 

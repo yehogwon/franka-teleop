@@ -276,6 +276,11 @@ against franky-sim on a loopback address.
   nothing about other obstacles. For other tools, change `HAND_POINTS`.
 - **Singularity thresholds come from the simulator.** `sigma_slow`/`sigma_stop` were tuned where
   franky-sim's Cartesian tracking breaks down. Check them on the real arm at low speed.
+- **franky's planner can occasionally reject a motion.** It can fail numerically ("Motion planner
+  failed, code -110"), which so far has been seen only at near-zero speeds while a limiter ramped
+  the target down. The node retries a single rejection transparently. Three within 2 s halt the
+  arm and require a deadman release. If the robot reports an error at the same time, the node
+  latches the error mode.
 - **Not tested on real hardware.** A physical gamepad's trigger ranges and rumble, a PREEMPT_RT
   laptop and the real arm can only be checked on the deployment hardware. The preflight tools
   (`ft-check-rt`, `ft-check-joystick`, `ft-check-robot`) exist for exactly that.
