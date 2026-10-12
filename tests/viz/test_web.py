@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 import urllib.request
 
 import mujoco
@@ -9,8 +10,9 @@ import numpy as np
 import pytest
 
 from franka_teleop.config import READY_Q
+from franka_teleop.protocol import NodeStatus
 from franka_teleop.sim.scene import load_model, robot_qpos_addrs, scene_xml
-from franka_teleop.viz.overlay import CameraSpec
+from franka_teleop.viz.overlay import STALE_AFTER_S, CameraSpec
 from franka_teleop.viz.source import Source
 from franka_teleop.viz.web import WebViewer
 
@@ -85,6 +87,39 @@ def test_mesh_poses_equal_mujoco_geom_poses_after_an_update(viewer):
         assert np.allclose(mat, data.geom_xmat[g], atol=1e-6)
     # Nothing new: no update.
     assert not viewer.update()
+
+
+def test_panel_marks_stale_state_and_status(viewer):
+    """The panel must not say "live" forever: state and NodeStatus go stale after ~1 s."""
+    src = viewer.src
+    assert "waiting for state" in viewer._source_text()
+    src.set(src.qpos)
+    viewer.update()
+    assert viewer._source_text().endswith("— live")
+    src.t_state -= STALE_AFTER_S + 1.0
+    assert "**STALE: no update for 2 s**" in viewer._source_text()
+    assert "no status (ft-node not running?)" in viewer._status_text()
+    src.status = NodeStatus(
+        seq=0,
+        t=0.0,
+        mode="teleop",
+        sim=True,
+        q=(0.0,) * 7,
+        dq=(0.0,) * 7,
+        ee_pos=(0.3, 0.0, 0.5),
+        ee_quat=(1.0, 0.0, 0.0, 0.0),
+        speed_level=1,
+        speed_scale=0.5,
+        frame="base",
+    )
+    src.t_status = time.monotonic()
+    text = viewer._status_text()
+    assert "STALE" not in text and "| mode | teleop [sim] |" in text
+    src.t_status -= STALE_AFTER_S + 1.0
+    assert "| node | STALE: no status for 2 s (last known below) |" in viewer._status_text()
+    src.set(src.qpos)  # a new state: live again
+    viewer.update()
+    assert viewer._source_text().endswith("— live")
 
 
 @pytest.mark.sim

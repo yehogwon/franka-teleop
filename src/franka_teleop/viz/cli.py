@@ -62,7 +62,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=SOURCES,
         default="auto",
         help="scene: ft-sim; status: ft-node (robot only, works for the real arm); "
-        "auto (default): ft-sim if it answers within ~1 s, else status",
+        "auto (default): with sim.enabled, ft-sim if it answers within ~1 s (and simulates this "
+        "config's robot.host), else status; with a real-robot config always status",
     )
     parser.add_argument(
         "--duration",
