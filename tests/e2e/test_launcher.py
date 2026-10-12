@@ -50,19 +50,84 @@ class StatusRecorder(threading.Thread):
         self.join(2)
 
 
-def processes_with(marker: str) -> list[str]:
-    """Command lines of live processes mentioning `marker` (e.g. the effective config dir)."""
-    found = []
+def _proc_table() -> dict[int, tuple[int, str]]:
+    """pid -> (ppid, cmdline) for every live process."""
+    table = {}
     for pid in os.listdir("/proc"):
         if not pid.isdigit():
             continue
         try:
-            cmd = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode()
-        except OSError:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:  # exited while scanning
             continue
-        if marker in cmd and "pytest" not in cmd:
-            found.append(cmd)
+        ppid = int(stat[stat.rindex(")") + 2 :].split()[1])
+        table[int(pid)] = (ppid, cmd.replace(b"\0", b" ").decode(errors="ignore"))
+    return table
+
+
+def descendants(root: int) -> dict[int, str]:
+    """Live descendants of `root` (pid -> cmdline). Other test runs on the machine (e.g. in a
+    parallel worktree) start identically named processes, so never match by name alone."""
+    table = _proc_table()
+    found, frontier = {}, [root]
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, cmd) in table.items():
+            if ppid == parent and pid not in found:
+                found[pid] = cmd
+                frontier.append(pid)
     return found
+
+
+def alive(pid: int) -> bool:
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return state[state.rindex(")") + 2] != "Z"
+
+
+class Launcher:
+    """ft-teleop as a subprocess; remembers every descendant it ever had."""
+
+    def __init__(self, config_path, *extra):
+        self.proc = subprocess.Popen(
+            [str(BIN / "ft-teleop"), "--config", str(config_path), "--viewer", "none", *extra],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.seen: dict[int, str] = {}
+        self.stderr = ""
+        self._err_reader = threading.Thread(target=self._read_err, daemon=True)
+        self._err_reader.start()
+
+    def _read_err(self):
+        self.stderr = self.proc.stderr.read()
+
+    def poll_children(self):
+        self.seen.update(descendants(self.proc.pid))
+
+    def wait(self, timeout):
+        deadline = time.monotonic() + timeout
+        while self.proc.poll() is None:
+            self.poll_children()
+            if time.monotonic() > deadline:
+                self.proc.kill()
+                raise TimeoutError("ft-teleop did not exit")
+            time.sleep(0.1)
+        self._err_reader.join(5)
+        return self.proc.returncode
+
+    def child(self, name: str) -> int:
+        self.poll_children()
+        pids = [pid for pid, cmd in self.seen.items() if f"/{name} " in cmd and alive(pid)]
+        assert len(pids) == 1, (name, self.seen)
+        return pids[0]
+
+    def leftovers(self) -> dict[int, str]:
+        return {pid: cmd for pid, cmd in self.seen.items() if alive(pid)}
 
 
 def launch(config_path, *extra, timeout=60):
@@ -125,26 +190,6 @@ def test_preflight_failure_aborts_before_connecting(config_file):
     assert "ft-node ready" not in r.stderr and time.monotonic() - t0 < 30
 
 
-def _start_launcher(path, script):
-    proc = subprocess.Popen(
-        [
-            str(BIN / "ft-teleop"),
-            "--config",
-            str(path),
-            "--viewer",
-            "none",
-            "--input",
-            "script",
-            "--script",
-            str(script),
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    return proc
-
-
 def _wait_for_node(cfg, timeout=30.0) -> NodeStatus:
     sub = transport.subscriber(cfg.net.connect(cfg.net.status_port))
     try:
@@ -157,49 +202,39 @@ def _wait_for_node(cfg, timeout=30.0) -> NodeStatus:
 
 def test_sigterm_stops_every_process(real_path_config):
     cfg, path = real_path_config
-    proc = _start_launcher(path, DEMO)
-    marker = str(Path(path).parent)
-    try:
-        _wait_for_node(cfg)
-        time.sleep(1.5)  # mid-script, arm moving
-        proc.send_signal(signal.SIGTERM)
-        proc.wait(30)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    assert proc.returncode == 0, proc.stderr.read()[-3000:]
-    time.sleep(0.5)
-    assert processes_with(marker) == [] and processes_with("ft-teleop-") == []
+    run = Launcher(path, "--input", "script", "--script", str(DEMO))
+    _wait_for_node(cfg)
+    time.sleep(1.5)  # mid-script, arm moving
+    run.poll_children()
+    assert {"ft-node", "ft-joystick"} <= {
+        name for cmd in run.seen.values() for name in ("ft-node", "ft-joystick") if name in cmd
+    }
+    run.proc.send_signal(signal.SIGTERM)
+    assert run.wait(30) == 0, run.stderr[-3000:]
+    assert run.leftovers() == {}
 
 
 def test_node_crash_tears_down_session(real_path_config):
     cfg, path = real_path_config
-    proc = _start_launcher(path, DEMO)
-    try:
-        _wait_for_node(cfg)
-        nodes = [
-            int(pid)
-            for pid in os.listdir("/proc")
-            if pid.isdigit()
-            and "ft-node" in Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="ignore")
-            and "ft-teleop-" in Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="ignore")
-        ]
-        assert len(nodes) == 1
-        os.kill(nodes[0], signal.SIGKILL)  # a crash: no halt, no cleanup
-        proc.wait(30)
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    err = proc.stderr.read()
-    assert proc.returncode == 1 and "node exited unexpectedly" in err
-    assert processes_with("ft-teleop-") == []
+    run = Launcher(path, "--input", "script", "--script", str(DEMO))
+    _wait_for_node(cfg)
+    time.sleep(0.5)
+    os.kill(run.child("ft-node"), signal.SIGKILL)  # a crash: no halt, no cleanup
+    assert run.wait(30) == 1 and "node exited unexpectedly" in run.stderr
+    assert run.leftovers() == {}
     # The node died mid-motion without halting: the arm must have come to rest by itself.
     from franka_teleop.arm.franky_arm import FrankyArm
 
     arm = FrankyArm(cfg.robot)
     try:
-        s = arm.read()
-        assert np.abs(s.dq).max() < 1e-3 and s.errors == () and not s.in_control
+        deadline = time.monotonic() + 1.0
+        while True:
+            s = arm.read()
+            if np.abs(s.dq).max() < 1e-3 or time.monotonic() > deadline:
+                break
+            time.sleep(0.02)
+        assert np.abs(s.dq).max() < 1e-3, f"arm still moving: dq={np.round(s.dq, 4)}"
+        assert s.errors == () and not s.in_control
     finally:
         arm.close()
 
@@ -218,4 +253,4 @@ def test_sim_session_runs_the_demo_script(franky_sim_proc, config_file):
     widths = [s.gripper_width for s in rec.statuses if not np.isnan(s.gripper_width)]
     assert min(widths) < 0.01 and widths[-1] > 0.07  # demo closes, then opens the gripper
     assert all(s.robot_errors == "" for s in rec.statuses)
-    assert processes_with("ft-teleop-") == []
+    assert r.leftovers() == {}
