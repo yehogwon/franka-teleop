@@ -130,13 +130,11 @@ class Launcher:
         return {pid: cmd for pid, cmd in self.seen.items() if alive(pid)}
 
 
-def launch(config_path, *extra, timeout=60):
-    return subprocess.run(
-        [str(BIN / "ft-teleop"), "--config", str(config_path), "--viewer", "none", *extra],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+def launch(config_path, *extra, timeout=60) -> Launcher:
+    """Run ft-teleop to completion, recording its descendants (for orphan checks)."""
+    run = Launcher(config_path, *extra)
+    run.returncode = run.wait(timeout)
+    return run
 
 
 @pytest.fixture
@@ -166,6 +164,7 @@ def test_real_robot_path_preflight_node_joystick(real_path_config):
     assert x1 - x0 > 0.04, (x0, x1)
     assert all(s.robot_errors == "" for s in rec.statuses)
     assert not rec.statuses[-1].sim and rec.statuses[-1].mode == "idle"
+    assert r.leftovers() == {}
 
 
 def test_real_robot_path_rejects_keyboard_and_script_by_default(franky_sim_proc, config_file):
@@ -239,8 +238,7 @@ def test_node_crash_tears_down_session(real_path_config):
         arm.close()
 
 
-def test_sim_session_runs_the_demo_script(franky_sim_proc, config_file):
-    pytest.importorskip("franka_teleop.sim.server")
+def test_sim_session_runs_the_demo_script(config_file):
     cfg = make_test_config(free_loopback_host())
     rec = StatusRecorder(cfg)
     rec.start()
