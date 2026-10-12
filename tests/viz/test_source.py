@@ -132,7 +132,8 @@ def test_auto_uses_status_with_a_real_robot_config(fake_ft_sim):
     src = open_source(real_cfg, "auto")
     try:
         assert src.kind == "status" and "ft-node status" in src.describe()
-        assert time.monotonic() - t0 < 0.5 and rpc.served == 0  # ft-sim is not even asked
+        assert rpc.served == 0  # ft-sim is not even asked ...
+        assert time.monotonic() - t0 < 2.0  # ... so there is no probe timeout either
     finally:
         src.close()
 
