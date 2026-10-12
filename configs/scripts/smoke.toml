@@ -1,0 +1,9 @@
+# Smoke test: about 2 s of slow forward motion (a few centimetres), then stop.
+#   uv run ft-joystick --device script --script configs/scripts/smoke.toml --exit-when-done
+# A 0.3 s neutral step with the deadman released is added before and after automatically.
+
+description = "2 s forward"
+
+[[step]]
+duration = 2.0
+linear = [0.5, 0.0, 0.0]

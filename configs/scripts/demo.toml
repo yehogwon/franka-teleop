@@ -1,0 +1,46 @@
+# Demo: a small square in the horizontal plane with a gripper close/open on the way.
+#   uv run ft-joystick --device script --script configs/scripts/demo.toml --exit-when-done
+#
+# Values are normalized operator-frame intent: linear = (forward, left, up), angular =
+# (roll, pitch, yaw), each in [-1, 1]. The node scales them by teleop.max_linear_speed
+# (0.15 m/s) and the current speed level (initially 0.5), so 0.6 for 2 s is about
+# 0.6 * 0.15 * 0.5 * 2 = 9 cm. A 0.3 s neutral step with the deadman released is added
+# automatically before the first and after the last step.
+#
+# Scripts are accepted only while sim.enabled (or with "script" in teleop.allowed_sources).
+
+description = "square in the horizontal plane, gripper close/open, small yaw"
+
+[[step]]  # forward
+duration = 2.0
+linear = [0.6, 0.0, 0.0]
+
+[[step]]  # left
+duration = 2.0
+linear = [0.0, 0.6, 0.0]
+
+[[step]]  # pause, deadman released, close the gripper
+duration = 1.5
+deadman = false
+press = ["gripper"]
+
+[[step]]  # back
+duration = 2.0
+linear = [-0.6, 0.0, 0.0]
+
+[[step]]  # right, back to the start
+duration = 2.0
+linear = [0.0, -0.6, 0.0]
+
+[[step]]  # yaw left and back
+duration = 1.0
+angular = [0.0, 0.0, 0.5]
+
+[[step]]
+duration = 1.0
+angular = [0.0, 0.0, -0.5]
+
+[[step]]  # open the gripper again
+duration = 1.5
+deadman = false
+press = ["gripper"]
