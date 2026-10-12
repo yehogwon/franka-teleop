@@ -49,6 +49,7 @@ class FakeArm:
         self.calls: list[tuple[str, object]] = []
         self.recover_ok = True
         self.planner_fail_next = False
+        self.planner_fail_poll = False
         self.keypoints: list[tuple[np.ndarray, np.ndarray]] = []  # no links: floor guard idle
 
     # -- simulation ----------------------------------------------------------------------------
@@ -149,6 +150,14 @@ class FakeArm:
 
     def motion_finished(self) -> bool:
         self._advance()
+        if self.planner_fail_poll and self._mode is not None:
+            # franky raises planner failures from its control loop: the motion ends and the
+            # exception surfaces at the next poll.
+            self.planner_fail_poll = False
+            self._mode = None
+            raise ArmPlannerError(
+                "motion planner failed: Motion planner failed with error code -110"
+            )
         if self.errors:
             raise ArmError(f"motion aborted: {self.errors}")
         return self._mode is None

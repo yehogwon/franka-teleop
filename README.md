@@ -159,8 +159,9 @@ Measured against franky-sim (`tests/node/test_node_sim.py`, sim in a separate pr
 | hand rolled over 15 cm above the table | wrist and hand stay clear of it |
 
 A randomized operator soak (`tests/node/test_soak.py`; random sticks, deadman, speed, frame,
-gripper, home, stop/recover) checks every status message: no robot errors, the workspace is
-never left, no joint limit is crossed, and σ stays above the stop threshold. The soak is how the
+gripper, home, stop/recover) checks every status message: no robot errors, the TCP stays
+within 1 mm of the workspace box (the test allows 2 mm), no joint limit is crossed, and σ stays
+above the stop threshold. The soak is how the
 wrist-on-table gap was found. The soak and two independent code reviews also found the other
 failure modes listed above; each now has a regression test.
 
@@ -181,13 +182,16 @@ Everything runs on the laptop. Do it in this order:
 4. **Config.** In `configs/real.toml` set `robot.host`. Measure your table and set `workspace`
    (and `robot.home_q` if needed). Mirror any change in `configs/sim.toml`: the parity test
    allows only `robot.host` and `sim.enabled` to differ.
-5. **Read-only check.** `uv run ft-check-robot -c configs/real.toml` connects without moving the
+5. **Gripper.** After power-on the Franka Hand must be homed once, in Desk or with
+   `uv run python -c "import franky; franky.Gripper('<robot ip>').homing()"`, before its widths
+   are valid. An unhomed hand shows up as a gripper error in the status line.
+6. **Read-only check.** `uv run ft-check-robot -c configs/real.toml` connects without moving the
    arm. It reports the robot mode, errors, joint margins, whether the end effector is inside the
    workspace, the state rate and the gripper. If the robot's *server version* doesn't match the
    installed franky, it prints the exact `pyproject.toml` change (see below).
-6. **Rehearse on the laptop.** `uv run ft-teleop` (sim config), with the same kernel, gamepad
+7. **Rehearse on the laptop.** `uv run ft-teleop` (sim config), with the same kernel, gamepad
    and processes as the real run.
-7. **Go.** `uv run ft-teleop -c configs/real.toml` runs `ft-check-robot` first, then the node,
+8. **Go.** `uv run ft-teleop -c configs/real.toml` runs `ft-check-robot` first, then the node,
    viewer and gamepad. Start at the lowest speed level (d-pad ↓). For the first sessions,
    consider lowering `robot.dynamics_factor`.
 

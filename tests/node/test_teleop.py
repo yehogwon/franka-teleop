@@ -466,3 +466,26 @@ def test_near_zero_twist_components_are_sent_as_zero():
     s = rig.step(rig.op.cmd(deadman=True, linear=(0.004, 0, 0), angular=(0, 0.005, 1)))
     # 0.004 * 0.075 m/s = 0.3 mm/s and 0.005 * 0.3 rad/s = 1.5 mrad/s fall in the deadband
     assert s.twist[0] == 0.0 and s.twist[4] == 0.0 and s.twist[5] > 0
+
+
+def test_planner_rejection_during_homing_reissues_the_joint_motion():
+    """Found in the final review: a rejection mid-homing ended the joint motion, and the next
+    tick reported 'home reached' for an arm that never got home."""
+    rig = Rig()
+    rig.engage()
+    rig.run(0.5, deadman=True, linear=(1, 0, 0), angular=(0, 0, 1))  # move away from home
+    rig.step(rig.op.cmd(deadman=True, press=("home",)))
+    for _ in range(100):  # the velocity motion brakes first, then the joint motion starts
+        rig.step(rig.op.cmd(deadman=True))
+        if rig.count("move_joints"):
+            break
+    rig.run(0.05, deadman=True)
+    assert rig.count("move_joints") == 1 and rig.node.mode == HOMING
+    rig.arm.planner_fail_poll = True
+    s = rig.step(rig.op.cmd(deadman=True))
+    assert s.mode == HOMING and "retrying" in s.message
+    assert not np.allclose(rig.arm.read().q, rig.cfg.robot.home_q, atol=1e-3)
+    s = rig.run(1.5, deadman=True)
+    assert rig.count("move_joints") == 2
+    assert "home reached" in s.message
+    assert np.allclose(rig.arm.read().q, rig.cfg.robot.home_q, atol=1e-6)

@@ -170,6 +170,10 @@ class TeleopNode:
                 self._enter_error(f"robot error: {', '.join(errors)}")
                 return
             if len(self.planner_times) < PLANNER_MAX_REJECTIONS:
+                if self.mode == HOMING:
+                    # The joint motion ended short of home: issue it again (or "home reached"
+                    # would be reported for an arm that never got there).
+                    self.homing_started = False
                 self.message = f"{e} (retrying)"
                 return
             self._halt()
