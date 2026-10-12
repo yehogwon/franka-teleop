@@ -285,11 +285,14 @@ def run(cfg: Config, realtime_factor: float = 1.0, verbose: bool = False) -> int
     from .scene import ROBOT_PREFIX, make_simulator, portable_xml
 
     loop: SimLoop | None = None
+    interrupted = False
 
-    def on_signal(signum, _frame):
+    def on_signal(_signum, _frame):
+        nonlocal interrupted
         if loop is not None:
             loop.stop()
-        else:
+        elif not interrupted:  # still starting up: unwind, once (not again during cleanup)
+            interrupted = True
             raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, on_signal)
