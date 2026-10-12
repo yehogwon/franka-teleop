@@ -3,6 +3,7 @@ checked against the safety invariants. FT_SOAK_SECONDS sets the duration (defaul
 
 from __future__ import annotations
 
+import itertools
 import os
 import threading
 import time
@@ -131,13 +132,21 @@ def test_randomized_operator_soak(franky_sim_proc, record_property):
         lim: sum(lim in s.limiters for s in statuses)
         for lim in ("workspace", "floor", "singularity", "joint")
     }
-    for k, v in {**events, **modes, **limiters}.items():
+    planner = sum(
+        1
+        for a, b in itertools.pairwise(statuses)
+        if "motion planner failed" in b.message and "motion planner failed" not in a.message
+    )
+    for k, v in {**events, **modes, **limiters, "planner_rejections": planner}.items():
         record_property(k, v)
     record_property("worst_workspace_violation_mm", worst_ws * 1e3)
     record_property("min_joint_margin_rad", worst_joint)
     record_property("min_sigma_teleop", min_sigma)
     record_property("loop_overruns", overruns)
-    print(f"\nsoak {SOAK_S:.0f}s: events {events} modes {modes} limiters {limiters}")
+    print(
+        f"\nsoak {SOAK_S:.0f}s: events {events} modes {modes} limiters {limiters} "
+        f"planner rejections {planner}"
+    )
     print(
         f"worst workspace violation {worst_ws * 1e3:.2f} mm, min joint margin {worst_joint:.4f}"
         f" rad, min sigma {min_sigma:.4f}, overruns {overruns}"

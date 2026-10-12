@@ -418,3 +418,38 @@ def test_frame_toggle_is_refused_while_moving():
     rig.run(0.1, deadman=True)  # sticks released: one zero twist sent
     s = rig.step(rig.op.cmd(deadman=True, press=("frame",)))
     assert s.frame == "tool"
+
+
+def test_planner_rejection_halts_and_rearms_without_latching_error():
+    rig = Rig()
+    rig.engage()
+    rig.run(0.2, deadman=True, linear=(1, 0, 0))
+    rig.arm.planner_fail_next = True
+    s = rig.step(rig.op.cmd(deadman=True, linear=(1, 0, 0)))
+    assert s.mode == IDLE and "motion planner failed" in s.message and "release" in s.message
+    assert rig.count("recover") == 0 and rig.node.planner_rejections == 1
+    n = len(rig.twists())
+    rig.run(0.2, deadman=True, linear=(1, 0, 0))
+    assert len(rig.twists()) == n  # disarmed: needs a release
+    rig.engage()
+    s = rig.run(0.1, deadman=True, linear=(1, 0, 0))
+    assert s.mode == TELEOP and len(rig.twists()) > n
+
+
+def test_planner_rejection_with_robot_error_latches_error():
+    rig = Rig()
+    rig.engage()
+    rig.run(0.2, deadman=True, linear=(1, 0, 0))
+    rig.arm.planner_fail_next = True
+    rig.arm.errors = ("cartesian_motion_generator_velocity_discontinuity",)
+    s = rig.step(rig.op.cmd(deadman=True, linear=(1, 0, 0)))
+    assert s.mode == ERROR
+
+
+def test_near_zero_twist_components_are_sent_as_zero():
+    rig = Rig()
+    rig.engage()
+    rig.run(0.2, deadman=True, linear=(1, 0, 0))
+    s = rig.step(rig.op.cmd(deadman=True, linear=(0.004, 0, 0), angular=(0, 0.005, 1)))
+    # 0.004 * 0.075 m/s = 0.3 mm/s and 0.005 * 0.3 rad/s = 1.5 mrad/s fall in the deadband
+    assert s.twist[0] == 0.0 and s.twist[4] == 0.0 and s.twist[5] > 0

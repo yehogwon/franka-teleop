@@ -71,10 +71,16 @@ ssh -L 8080:localhost:8080 server        # then open http://localhost:8080
 `ft-view --mode record --out run.mp4 --duration 10` and `--mode snapshot` render offscreen
 (EGL) without any display. Keyboard input works in an SSH terminal.
 
+`ft-view` draws ft-sim's full scene in simulation. With a robot config (`sim.enabled = false`)
+it always draws the arm from ft-node's joint states and never shows a simulator. If an ft-view
+stops receiving updates for more than 1 s, it marks the view **STALE**.
+
 ## Controls
 
 Hold **LB** (the deadman) to move. Releasing it stops the arm. Nothing moves, not even the
-gripper, unless the deadman is held.
+gripper, unless the deadman is held. After the pad connects or reconnects, release LB once
+before it counts. If the pad drops out, the reader waits for *that* pad (matched by its
+identity, not its slot) and ignores any other pad.
 
 | Gamepad | Action |
 |---|---|
@@ -96,7 +102,8 @@ face the robot, set `teleop.operator_yaw_deg = 180`. In tool frame, "up" moves a
 direction (out of the fingers). Before the first real run, use `ft-check-joystick` to check the
 directions on your pad.
 
-Keyboard (`--input keyboard`): `space` toggles the deadman (terminals have no key-up events),
+Keyboard (`--input keyboard`): `space` toggles the deadman (terminals have no key-up events).
+Any space press while the deadman is on turns it off at once, and holding space leaves it off.
 `w/s a/d r/f` translate, `j/l i/k u/o` yaw, pitch and roll, `g` gripper, `h` home, `b` stop,
 `c` recover, `t` frame, `]`/`[` speed, `q` quit. Keyboard and script input are accepted only
 when `sim.enabled` is true, unless you add them to `teleop.allowed_sources`.

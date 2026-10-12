@@ -13,7 +13,7 @@ import franky
 import numpy as np
 
 from ..config import RobotConfig
-from .base import ArmDisconnected, ArmError, ArmState
+from .base import ArmDisconnected, ArmError, ArmPlannerError, ArmState
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,10 @@ def call[T](fn: Callable[[], T]) -> T:
         raise ArmError(f"motion type change while moving: {e}") from e
     except franky.Exception as e:
         raise ArmError(str(e)) from e
+    except RuntimeError as e:
+        if "motion planner failed" in str(e).lower():
+            raise ArmPlannerError(f"motion planner failed: {e}") from e
+        raise ArmError(f"{type(e).__name__}: {e}") from e
     except Exception as e:
         # franky also raises classes outside franky.Exception (e.g. a plain RuntimeError when
         # its motion planner fails, GripperException, MotionReuseException). The node must see

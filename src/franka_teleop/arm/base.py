@@ -43,6 +43,11 @@ class ArmError(RuntimeError):
     """The robot rejected or aborted a motion (reflex, limit violation, ...). Needs recovery."""
 
 
+class ArmPlannerError(ArmError):
+    """franky's motion planner rejected a command (a numerical failure, not a robot fault). The
+    robot reports no error; the motion just did not start or was cut short."""
+
+
 class ArmDisconnected(RuntimeError):
     """The connection to the robot is gone. Not recoverable in-process."""
 

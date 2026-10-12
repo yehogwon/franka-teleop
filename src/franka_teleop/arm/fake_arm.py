@@ -12,7 +12,7 @@ import numpy as np
 
 from ..config import READY_Q
 from ..geometry import exp_so3
-from .base import ArmError, ArmState
+from .base import ArmError, ArmPlannerError, ArmState
 
 # A fixed, well-conditioned Jacobian: joint i mostly drives twist component i, joint 7 adds yaw.
 FAKE_JACOBIAN = np.hstack([np.eye(6), np.array([[0, 0, 0, 0, 0, 1.0]]).T])
@@ -48,6 +48,7 @@ class FakeArm:
         self.gripper_width = 0.08
         self.calls: list[tuple[str, object]] = []
         self.recover_ok = True
+        self.planner_fail_next = False
         self.keypoints: list[tuple[np.ndarray, np.ndarray]] = []  # no links: floor guard idle
 
     # -- simulation ----------------------------------------------------------------------------
@@ -106,6 +107,12 @@ class FakeArm:
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
         self._advance()
         self.calls.append(("send_twist", np.array(twist, dtype=float)))
+        if self.planner_fail_next:
+            self.planner_fail_next = False
+            self._mode = None  # the motion was cut short, like franky after a planner failure
+            raise ArmPlannerError(
+                "motion planner failed: Motion planner failed with error code -110"
+            )
         if self.errors:
             raise ArmError(f"robot has errors: {self.errors}")
         if self._mode == "joint":

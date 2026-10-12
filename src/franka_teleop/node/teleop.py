@@ -23,7 +23,7 @@ from collections.abc import Callable
 
 import numpy as np
 
-from ..arm.base import Arm, ArmError, ArmState
+from ..arm.base import Arm, ArmError, ArmPlannerError, ArmState
 from ..config import Config
 from ..geometry import quat_from_mat
 from ..protocol import ACTIONS, NodeStatus, TeleopCommand
@@ -44,6 +44,12 @@ IDLE, TELEOP, HOMING, ERROR, LOCKED = "idle", "teleop", "homing", "error", "lock
 REARM_AFTER_STALE_MS = 1000.0
 STALE_MESSAGE = "operator stream stale"
 
+# Twist components below these are sent as exactly zero. A twist the limiters scaled almost to
+# nothing means "stop"; streaming creeping near-zero targets also exposed a numerical failure in
+# franky's planner (Motion planner failed, code -110) during the randomized soak.
+LINEAR_DEADBAND = 1e-3  # m/s
+ANGULAR_DEADBAND = 5e-3  # rad/s
+
 
 class TeleopNode:
     def __init__(self, arm: Arm, cfg: Config, clock: Callable[[], float] = time.monotonic):
@@ -58,6 +64,7 @@ class TeleopNode:
         self.frame = cfg.teleop.default_frame
         self.gripper_closed: bool | None = None
         self.gripper_error = ""
+        self.planner_rejections = 0
         self.session = 0
         self.counters: dict[str, int] = {}
         self.last_seq = -1
@@ -139,9 +146,29 @@ class TeleopNode:
                 self._step_teleop(deadman, fresh, s)
             else:
                 self.twist, self.limiters = np.zeros(6), ()
+        except ArmPlannerError as e:
+            self._planner_rejected(e)
         except ArmError as e:
             self._enter_error(f"arm error: {e}")
         return self._status(now)
+
+    def _planner_rejected(self, e: ArmPlannerError) -> None:
+        """franky refused a motion without a robot fault: bring the arm to rest and wait for a
+        deadman release instead of latching the error mode."""
+        self.planner_rejections += 1
+        try:
+            self._halt()
+            errors = self.arm.read().errors
+        except ArmError as e2:
+            self._enter_error(f"arm error after planner failure: {e2}")
+            return
+        if errors:
+            self._enter_error(f"robot error: {', '.join(errors)}")
+            return
+        self.mode, self.armed = IDLE, False
+        self.twist, self.limiters = np.zeros(6), ()
+        self.homing_started = False
+        self.message = f"{e}; arm halted, release the deadman"
 
     def _handle_events(self, events: set[str], deadman: bool, s: ArmState) -> None:
         if "stop" in events and self.mode != LOCKED:
@@ -240,6 +267,9 @@ class TeleopNode:
             if on
         )
         self.limiters = flags + tuple(f for f in joint_flags if f not in flags)
+        twist = np.where(
+            np.abs(twist) < np.r_[[LINEAR_DEADBAND] * 3, [ANGULAR_DEADBAND] * 3], 0.0, twist
+        )
         self.twist = twist
         self.mode = TELEOP
         nonzero = bool(np.any(np.abs(twist) > 1e-6))
