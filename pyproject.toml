@@ -1,0 +1,66 @@
+[project]
+name = "franka-teleop"
+version = "0.1.0"
+description = "Gamepad teleoperation for Franka arms, rehearsed against a wire-level libfranka simulator"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # franky and franky-sim are coupled through the libfranka wire protocol. franky-sim
+    # emulates robot server version 10; the PyPI franky wheel below speaks it. A real robot
+    # may need a different franky build -- run `ft-check-robot` and see README.
+    "franky-control==2.0.0",
+    "franky-sim==1.0.4",
+    "imageio[ffmpeg]>=2.38",
+    "msgspec>=0.22",
+    "mujoco>=3.15",
+    "numpy>=1.26",
+    "pygame>=2.6.1",
+    "pyzmq>=27",
+    "viser>=1.1.1",
+]
+
+[project.scripts]
+ft-teleop = "franka_teleop.launch:main"
+ft-sim = "franka_teleop.sim.server:main"
+ft-node = "franka_teleop.node.server:main"
+ft-joystick = "franka_teleop.input.client:main"
+ft-view = "franka_teleop.viz.cli:main"
+ft-check-rt = "franka_teleop.tools.check_rt:main"
+ft-check-robot = "franka_teleop.tools.check_robot:main"
+ft-check-joystick = "franka_teleop.tools.check_joystick:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+# do not use system python
+python-preference = 'only-managed'
+# libfranka (franky) ships Linux x86_64 wheels only; the operator laptop is Linux.
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-timeout>=2.3",
+    "ruff>=0.17.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+timeout = 300
+markers = [
+    "sim: needs a franky-sim server (MuJoCo, 1 kHz loop)",
+    "display: needs an X display (run under xvfb-run) or EGL",
+    "e2e: spawns the ft-* console scripts as subprocesses",
+    "slow: long-running soak tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]

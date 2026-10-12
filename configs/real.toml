@@ -1,0 +1,68 @@
+# Real robot: everything runs on the operator laptop, wired to the arm by Ethernet.
+# configs/sim.toml must differ only in robot.host and sim.enabled (tests/test_config.py).
+
+[robot]
+host = "172.16.0.2"        # FCI address of the arm (Desk: Settings > Network)
+realtime = "enforce"        # libfranka realtime mode. Keep "enforce"; use FT_REALTIME=ignore only on a non-RT dev box
+dynamics_factor = 0.2       # franky relative dynamics factor: scales velocity/acceleration/jerk limits
+gripper = true
+gripper_speed = 0.05        # m/s
+gripper_force = 20.0        # N, grasp force
+collision_torque_thresholds = [20.0, 20.0, 18.0, 18.0, 16.0, 14.0, 12.0]  # Nm, per joint
+collision_force_thresholds = [20.0, 20.0, 20.0, 25.0, 25.0, 25.0]         # N / Nm, Cartesian
+home_q = [0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398]       # "ready" pose
+# Joint limits [rad]: intersection of FR3 and Panda, valid for either arm.
+#   FR3   lower [-2.7437, -1.7837, -2.9007, -3.0421, -2.8065,  0.5445, -3.0159]
+#         upper [ 2.7437,  1.7837,  2.9007, -0.1518,  2.8065,  4.5169,  3.0159]
+#   Panda lower [-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973]
+#         upper [ 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973]
+joint_lower = [-2.7437, -1.7628, -2.8973, -3.0421, -2.8065, 0.5445, -2.8973]
+joint_upper = [2.7437, 1.7628, 2.8973, -0.1518, 2.8065, 3.7525, 2.8973]
+
+[sim]
+enabled = false            # robot.host is a real arm
+scene = "tabletop"
+initial_q = [0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398]
+
+[net]
+bind_host = "127.0.0.1"     # publishers bind here; everything runs on the laptop
+connect_host = "127.0.0.1"  # subscribers connect here
+cmd_port = 5555             # joystick -> node   TeleopCommand
+status_port = 5556          # node -> clients    NodeStatus
+scene_port = 5557           # sim -> viewer      SceneState
+scene_rpc_port = 5558       # viewer -> sim      SceneInfo request
+
+[teleop]
+rate_hz = 100.0
+cmd_timeout_ms = 150.0      # stale command -> zero velocity
+hold_ms = 100               # robot-side watchdog: each velocity target is held at most this long
+max_linear_speed = 0.15     # m/s at full stick and speed level 1.0
+max_angular_speed = 0.6     # rad/s
+speed_levels = [0.25, 0.5, 0.75, 1.0]
+initial_speed_level = 1
+default_frame = "base"      # "base" or "tool"
+operator_yaw_deg = 0.0      # 0: operator behind the robot looking along +x; 180: facing it
+allowed_sources = ["gamepad"]  # keyboard/script are added automatically when sim.enabled
+
+[workspace]
+# End-effector box in the robot base frame [m]. Measure your table before the first real run.
+lower = [0.25, -0.45, 0.03]
+upper = [0.80, 0.45, 0.75]
+slow_zone = 0.05
+
+[joint_guard]
+margin = 0.2                # rad: joint speed towards a limit ramps to zero over this distance
+max_joint_speed = 1.0       # rad/s: twist is scaled down above this (near singularities)
+damping = 0.05
+
+[input]
+device = "gamepad"
+rate_hz = 100.0
+gamepad_index = 0
+deadzone = 0.12
+expo = 0.5
+invert = []                 # e.g. ["ang_y"] to flip pitch
+
+[viewer]
+fps = 60.0
+web_port = 8080
