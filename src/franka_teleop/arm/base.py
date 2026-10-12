@@ -56,6 +56,11 @@ class Arm(Protocol):
         """6x7 zero Jacobian of the end effector at configuration q (the robot's own model)."""
         ...
 
+    def keypoints_at(self, q: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+        """(position, 3x7 translational Jacobian) of the elbow/wrist joint frames and the flange
+        at configuration q, for keeping the arm's links above the table."""
+        ...
+
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
         """Stream a base-frame twist (vx, vy, vz, wx, wy, wz). Preempts the previous velocity
         target; the robot holds it for hold_ms and then decelerates to rest by itself."""

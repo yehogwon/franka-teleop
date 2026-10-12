@@ -355,4 +355,66 @@ def test_shutdown_halts_motion_and_closes_arm():
 
     rig.node.clock = advancing_clock
     rig.node.shutdown()
-    assert rig.count("halt") == 1 and rig.arm.calls[-1] == ("close", None)
+    assert rig.count("halt") == 1
+    assert rig.arm.calls[-1] == ("close", {"in_control": False})
+
+
+@pytest.mark.parametrize("scenario", ["deadman_release", "aborted_homing", "stop_button"])
+def test_shutdown_waits_for_a_braking_stop_motion(scenario):
+    """Found in review: shutdown right after a halt used to close() while the stop motion was
+    still braking, and FrankyArm.close() then aborted it with stop()."""
+    rig = Rig()
+    rig.engage()
+    if scenario == "aborted_homing":
+        rig.step(rig.op.cmd(deadman=True, press=("home",)))
+        rig.run(0.1, deadman=True)
+        rig.step(rig.op.cmd(deadman=False))  # joint stop motion braking for 0.2 s
+    elif scenario == "stop_button":
+        rig.run(0.3, deadman=True, linear=(1, 0, 0))
+        rig.step(rig.op.cmd(deadman=True, linear=(1, 0, 0), press=("stop",)))
+    else:
+        rig.run(0.3, deadman=True, linear=(1, 0, 0))
+        rig.step(rig.op.cmd(deadman=False))
+    assert rig.arm.read().in_control  # still braking
+
+    def advancing_clock():
+        rig.clock.t += 0.01
+        return rig.clock.t
+
+    rig.node.clock = advancing_clock
+    rig.arm.clock = advancing_clock
+    rig.node.shutdown()
+    assert rig.arm.calls[-1] == ("close", {"in_control": False})
+    assert rig.count("stop") == 0
+
+
+def test_non_finite_intent_is_dropped():
+    rig = Rig()
+    rig.engage()
+    rig.run(0.1, deadman=True, linear=(1, 0, 0))
+    n = len(rig.twists())
+    s = rig.step(rig.op.cmd(deadman=True, linear=(float("nan"), 0, 0)))
+    assert "non-finite" in s.message and all(np.isfinite(t).all() for t in rig.twists())
+    s = rig.run(0.3, deadman=True, linear=(float("inf"), 0, 0))
+    assert s.mode == IDLE and rig.count("halt") == 1  # dropped commands -> stale -> halt
+    assert len(rig.twists()) <= n + int(rig.cfg.teleop.cmd_timeout_ms / 10) + 1
+
+
+def test_stop_wins_over_recover_in_the_same_message():
+    rig = Rig()
+    rig.engage()
+    rig.step(rig.op.cmd(deadman=False, press=("stop",)))
+    assert rig.node.mode == LOCKED
+    s = rig.step(rig.op.cmd(deadman=False, press=("recover", "stop")))
+    assert s.mode == LOCKED
+
+
+def test_frame_toggle_is_refused_while_moving():
+    rig = Rig()
+    rig.engage()
+    rig.run(0.1, deadman=True, linear=(0, 0, 1))
+    s = rig.step(rig.op.cmd(deadman=True, linear=(0, 0, 1), press=("frame",)))
+    assert s.frame == "base" and "release the sticks" in s.message
+    rig.run(0.1, deadman=True)  # sticks released: one zero twist sent
+    s = rig.step(rig.op.cmd(deadman=True, press=("frame",)))
+    assert s.frame == "tool"

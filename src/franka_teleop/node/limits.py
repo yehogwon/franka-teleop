@@ -3,6 +3,8 @@
 Pipeline (TeleopNode applies them in this order):
   shape_twist        normalized intent -> twist [m/s, rad/s]: speed level, operator yaw, frame
   limit_workspace    outward EE velocity ramps to zero at the walls of the workspace box
+  limit_floor        the wrist links and the hand body may not descend into the table (the box
+                     only constrains the TCP point; a tilted hand puts the wrist below it)
   limit_singularity  motion towards a kinematic singularity (e.g. the elbow straightening at the
                      edge of reach) slows and stops before Cartesian tracking breaks down
   limit_joints       scale the twist so no joint approaches its limit or moves too fast, using
@@ -63,6 +65,60 @@ def limit_workspace(
             if -v > cap:
                 out[i], limited = -cap, True
     return out, limited
+
+
+# Franka Hand body corners and fingertips in the TCP frame (z = approach, out of the fingers;
+# the flange is 0.1034 m behind the TCP, the body spans ~4.5-10.3 cm behind it, 0.2 m wide).
+HAND_POINTS = np.array(
+    [[x, y, z] for x in (-0.03, 0.03) for y in (-0.1, 0.1) for z in (-0.1034, -0.045)]
+    + [[0.0, -0.04, 0.005], [0.0, 0.04, 0.005]]
+)
+
+
+def skew(v: np.ndarray) -> np.ndarray:
+    return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+
+
+def hand_keypoints(O_T_EE: np.ndarray, jacobian: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """(position, 3x7 translational Jacobian) of the hand points: v_p = v + w x r."""
+    R, p = O_T_EE[:3, :3], O_T_EE[:3, 3]
+    Jv, Jw = jacobian[:3], jacobian[3:]
+    out = []
+    for local in HAND_POINTS:
+        r = R @ local
+        out.append((p + r, Jv - skew(r) @ Jw))
+    return out
+
+
+def limit_floor(
+    twist: np.ndarray,
+    dq: np.ndarray,
+    keypoints: list[tuple[np.ndarray, np.ndarray, float]],
+    floor: float,
+    slow_zone: float,
+    max_linear_speed: float,
+) -> tuple[np.ndarray, bool]:
+    """Uniformly scale the twist so that no keypoint (position, Jacobian, clearance) descends
+    faster than gain * (height above floor + clearance), gain = max speed / slow_zone.
+
+    `dq` is the joint velocity predicted for `twist`; keypoint velocities are J_i @ dq. Keypoints
+    moving up, or above the slow zone, never restrict the twist.
+    """
+    gain = max_linear_speed / slow_zone
+    scale = 1.0
+    for pos, J, clearance in keypoints:
+        height = pos[2] - floor - clearance
+        if height >= slow_zone:
+            continue
+        vz = float(J[2] @ dq)
+        if vz >= 0:
+            continue
+        allowed = gain * max(height, 0.0)
+        if -vz > allowed:
+            scale = min(scale, allowed / -vz)
+    if scale >= 1.0:
+        return np.asarray(twist, dtype=float), False
+    return np.asarray(twist, dtype=float) * scale, True
 
 
 def predict_joint_velocity(twist: np.ndarray, jacobian: np.ndarray, damping: float) -> np.ndarray:

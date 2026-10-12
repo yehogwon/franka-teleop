@@ -34,8 +34,8 @@ def connect_arm(cfg: Config, timeout_s: float) -> FrankyArm:
     while True:
         try:
             return FrankyArm(cfg.robot)
-        except franky.IncompatibleVersionException:
-            raise
+        except (franky.IncompatibleVersionException, franky.RealtimeException):
+            raise  # retrying cannot fix these
         except franky.Exception as e:
             if time.monotonic() >= deadline:
                 raise

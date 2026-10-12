@@ -27,7 +27,15 @@ from ..arm.base import Arm, ArmError, ArmState
 from ..config import Config
 from ..geometry import quat_from_mat
 from ..protocol import ACTIONS, NodeStatus, TeleopCommand
-from .limits import limit_joints, limit_singularity, limit_workspace, shape_twist
+from .limits import (
+    hand_keypoints,
+    limit_floor,
+    limit_joints,
+    limit_singularity,
+    limit_workspace,
+    predict_joint_velocity,
+    shape_twist,
+)
 
 IDLE, TELEOP, HOMING, ERROR, LOCKED = "idle", "teleop", "homing", "error", "locked"
 
@@ -49,6 +57,7 @@ class TeleopNode:
         self.speed_level = cfg.teleop.initial_speed_level
         self.frame = cfg.teleop.default_frame
         self.gripper_closed: bool | None = None
+        self.gripper_error = ""
         self.session = 0
         self.counters: dict[str, int] = {}
         self.last_seq = -1
@@ -71,6 +80,11 @@ class TeleopNode:
         """Validate a command; return the discrete actions it triggers."""
         if cmd.source not in self.allowed_sources:
             self.message = f"ignored command from source {cmd.source!r} (not allowed here)"
+            return set()
+        if not all(math.isfinite(x) for x in (*cmd.linear, *cmd.angular)):
+            # Never let NaN/inf reach the limiters (NaN comparisons are all False) or franky.
+            # The command is dropped, so the stream goes stale and the arm halts.
+            self.message = "ignored command with non-finite intent"
             return set()
         counters = cmd.counters()
         if cmd.session != self.session:
@@ -107,6 +121,10 @@ class TeleopNode:
             if not s.in_control:
                 self.moving = self.sent_nonzero = self.joint_motion = False
 
+            gripper_error = s.extra.get("gripper_error", "")
+            if gripper_error and gripper_error != self.gripper_error:
+                self.message = f"gripper error: {gripper_error}"
+            self.gripper_error = gripper_error
             if (s.errors or s.robot_mode == "Reflex") and self.mode != ERROR:
                 self._enter_error(f"robot error: {', '.join(s.errors) or s.robot_mode}")
             self._handle_events(events if fresh else set(), deadman, s)
@@ -131,7 +149,7 @@ class TeleopNode:
             if self.mode != ERROR:
                 self.mode, self.message = LOCKED, "locked by operator (press recover to unlock)"
             self.armed = False
-        if "recover" in events:
+        if "recover" in events and "stop" not in events:  # both at once: stop wins
             if self.mode == ERROR:
                 ok = self.arm.recover()
                 errors = self.arm.read().errors if ok else ("recovery failed",)
@@ -148,8 +166,12 @@ class TeleopNode:
         if "speed_down" in events:
             self.speed_level = max(self.speed_level - 1, 0)
         if "frame" in events:
-            self.frame = "tool" if self.frame == "base" else "base"
-            self.message = f"{self.frame} frame"
+            if self.sent_nonzero:
+                # Switching frames mid-motion can reverse the direction the stick commands.
+                self.message = "release the sticks to switch frames"
+            else:
+                self.frame = "tool" if self.frame == "base" else "base"
+                self.message = f"{self.frame} frame"
         may_act = deadman and self.armed and self.mode in (IDLE, TELEOP)
         if "gripper" in events:
             if may_act and self.cfg.robot.gripper:
@@ -189,6 +211,13 @@ class TeleopNode:
         twist, ws_limited = limit_workspace(
             twist, s.ee_pos, self.cfg.workspace, tc.max_linear_speed
         )
+        ws = self.cfg.workspace
+        keypoints = [(p, J, ws.link_clearance) for p, J in self.arm.keypoints_at(s.q)]
+        keypoints += [(p, J, ws.hand_clearance) for p, J in hand_keypoints(s.O_T_EE, s.jacobian)]
+        dq = predict_joint_velocity(twist, s.jacobian, self.cfg.joint_guard.damping)
+        twist, floor_limited = limit_floor(
+            twist, dq, keypoints, ws.floor, ws.slow_zone, tc.max_linear_speed
+        )
         twist, sing_limited = limit_singularity(
             twist, s.q, s.jacobian, self.arm.jacobian_at, self.cfg.joint_guard
         )
@@ -201,7 +230,15 @@ class TeleopNode:
             self.cfg.joint_guard,
             dq_measured=s.dq,
         )
-        flags = (("workspace",) if ws_limited else ()) + (("singularity",) if sing_limited else ())
+        flags = tuple(
+            name
+            for name, on in (
+                ("workspace", ws_limited),
+                ("floor", floor_limited),
+                ("singularity", sing_limited),
+            )
+            if on
+        )
         self.limiters = flags + tuple(f for f in joint_flags if f not in flags)
         self.twist = twist
         self.mode = TELEOP
@@ -279,13 +316,15 @@ class TeleopNode:
             loop_overruns=self.loop_overruns,
         )
 
-    def shutdown(self) -> None:
-        """Bring the arm to rest and release it."""
+    def shutdown(self, timeout_s: float = 3.0) -> None:
+        """Bring the arm to rest and release it. Whatever is running (teleop, homing, or a stop
+        motion that is still braking) is halted and waited for, so close() never has to abort
+        a motion mid-deceleration."""
         try:
-            if self.moving or self.mode == HOMING:
+            if self.arm.read().in_control:
                 self.arm.halt()
-                deadline = self.clock() + 2.0
-                while self.clock() < deadline and not self.arm.motion_finished():
+                deadline = self.clock() + timeout_s
+                while not self.arm.motion_finished() and self.clock() < deadline:
                     time.sleep(0.01)
         except ArmError:
             pass

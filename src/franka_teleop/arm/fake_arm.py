@@ -48,6 +48,7 @@ class FakeArm:
         self.gripper_width = 0.08
         self.calls: list[tuple[str, object]] = []
         self.recover_ok = True
+        self.keypoints: list[tuple[np.ndarray, np.ndarray]] = []  # no links: floor guard idle
 
     # -- simulation ----------------------------------------------------------------------------
 
@@ -98,6 +99,9 @@ class FakeArm:
 
     def jacobian_at(self, q: np.ndarray) -> np.ndarray:
         return FAKE_JACOBIAN.copy()
+
+    def keypoints_at(self, q: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+        return list(self.keypoints)
 
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
         self._advance()
@@ -153,7 +157,8 @@ class FakeArm:
         self.gripper_closed = closed
 
     def close(self) -> None:
-        self.calls.append(("close", None))
+        self._advance()
+        self.calls.append(("close", {"in_control": self._mode is not None}))
 
     # -- test hooks ----------------------------------------------------------------------------
 

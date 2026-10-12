@@ -13,6 +13,7 @@ joystick (sends a neutral, released command), node (halts the arm), viewer, simu
 from __future__ import annotations
 
 import argparse
+import ctypes
 import os
 import signal
 import subprocess
@@ -34,6 +35,17 @@ def script_path(name: str) -> str:
     return str(path) if path.exists() else name
 
 
+_libc = ctypes.CDLL(None, use_errno=True)
+_PR_SET_PDEATHSIG = 1
+
+
+def _die_with_launcher() -> None:
+    """Child pre-exec hook: get SIGTERM if the launcher dies (even by SIGKILL), so an ft-node
+    can never be left connected to the robot without its session. Only a single C call runs
+    between fork and exec (the libc handle is loaded before forking)."""
+    _libc.prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
+
+
 class Child:
     """A background ft-* process whose output is prefixed and forwarded to stderr."""
 
@@ -48,24 +60,30 @@ class Child:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            start_new_session=True,  # Ctrl-C at the terminal reaches only the launcher
+            start_new_session=True,  # terminal signals reach only the launcher
+            preexec_fn=_die_with_launcher,
         )
         self._reader = threading.Thread(target=self._pump, daemon=True)
         self._reader.start()
 
     def _pump(self) -> None:
-        for line in self.proc.stdout:
-            sys.stderr.write(f"[{self.name}] {line}")
-            sys.stderr.flush()
+        echo = True
+        for line in self.proc.stdout:  # keep draining even if echoing fails, or the child blocks
             if self.ready_prefix and line.startswith(self.ready_prefix):
                 self.ready.set()
+            if echo:
+                try:
+                    sys.stderr.write(f"[{self.name}] {line}")
+                    sys.stderr.flush()
+                except (OSError, ValueError):  # terminal gone (SIGHUP) or stderr closed
+                    echo = False
 
-    def wait_ready(self, timeout: float) -> bool:
+    def wait_ready(self, timeout: float, cancelled=lambda: False) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.ready.wait(0.1):
                 return True
-            if self.proc.poll() is not None:
+            if self.proc.poll() is not None or cancelled():
                 return False
         return False
 
@@ -137,7 +155,10 @@ def main(argv: list[str] | None = None) -> int:
             nonlocal stopping
             stopping = True
 
-        signal.signal(signal.SIGTERM, on_signal)
+        # SIGTERM, a closed terminal (SIGHUP) and Ctrl-\\ (SIGQUIT) all shut the session down in
+        # order; SIGINT (Ctrl-C) also reaches the foreground joystick, see below.
+        for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+            signal.signal(sig, on_signal)
 
         def shutdown(code: int) -> int:
             for child in reversed(children):  # node before sim: the arm is halted first
@@ -150,7 +171,9 @@ def main(argv: list[str] | None = None) -> int:
             if cfg.sim.enabled:
                 sim = Child("sim", [script_path("ft-sim"), *common], ready_prefix="ft-sim ready")
                 children.append(sim)
-                if not sim.wait_ready(READY_TIMEOUT_S):
+                if not sim.wait_ready(READY_TIMEOUT_S, lambda: stopping):
+                    if stopping:
+                        return shutdown(0)
                     print("ft-teleop: ft-sim did not start", file=sys.stderr)
                     return shutdown(1)
             elif not args.skip_preflight:
@@ -164,10 +187,14 @@ def main(argv: list[str] | None = None) -> int:
                         file=sys.stderr,
                     )
                     return 1
+                if stopping:
+                    return 0
 
             node = Child("node", [script_path("ft-node"), *common], ready_prefix="ft-node ready")
             children.append(node)
-            if not node.wait_ready(READY_TIMEOUT_S):
+            if not node.wait_ready(READY_TIMEOUT_S, lambda: stopping):
+                if stopping:
+                    return shutdown(0)
                 print("ft-teleop: ft-node did not start", file=sys.stderr)
                 return shutdown(1)
 
@@ -180,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.duration is not None:
                 joy_argv += ["--duration", str(args.duration)]
             # Foreground: inherits the terminal (keyboard mode, HUD). Ctrl-C reaches it too.
-            joystick = subprocess.Popen(joy_argv)
+            joystick = subprocess.Popen(joy_argv, preexec_fn=_die_with_launcher)
             code = 0
             while True:
                 try:

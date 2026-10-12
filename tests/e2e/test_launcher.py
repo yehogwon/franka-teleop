@@ -199,7 +199,9 @@ def _wait_for_node(cfg, timeout=30.0) -> NodeStatus:
         sub.close()
 
 
-def test_sigterm_stops_every_process(real_path_config):
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT])
+def test_signals_stop_every_process(real_path_config, sig):
+    """SIGHUP = terminal closed / SSH dropped: must tear down like SIGTERM, not orphan ft-node."""
     cfg, path = real_path_config
     run = Launcher(path, "--input", "script", "--script", str(DEMO))
     _wait_for_node(cfg)
@@ -208,8 +210,36 @@ def test_sigterm_stops_every_process(real_path_config):
     assert {"ft-node", "ft-joystick"} <= {
         name for cmd in run.seen.values() for name in ("ft-node", "ft-joystick") if name in cmd
     }
+    run.proc.send_signal(sig)
+    assert run.wait(30) == 0, run.stderr[-3000:]
+    assert run.leftovers() == {}
+
+
+def test_killed_launcher_takes_its_children_along(real_path_config):
+    """Even SIGKILL (no cleanup possible) must not leave ft-node holding the robot: children get
+    SIGTERM from the kernel (PR_SET_PDEATHSIG) and shut down in order."""
+    cfg, path = real_path_config
+    run = Launcher(path, "--input", "script", "--script", str(DEMO))
+    _wait_for_node(cfg)
+    time.sleep(1.0)
+    run.poll_children()
+    children = dict(run.seen)
+    run.proc.kill()
+    run.proc.wait(10)
+    deadline = time.monotonic() + 10
+    while any(alive(pid) for pid in children) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not [cmd for pid, cmd in children.items() if alive(pid)]
+
+
+def test_sigterm_during_startup_does_not_start_the_rest(franky_sim_proc, config_file):
+    cfg = make_test_config(free_loopback_host())  # sim session: ft-sim takes ~1-2 s to start
+    run = Launcher(config_file(cfg), "--input", "script", "--script", str(DEMO))
+    time.sleep(0.3)
     run.proc.send_signal(signal.SIGTERM)
     assert run.wait(30) == 0, run.stderr[-3000:]
+    assert "ft-node ready" not in run.stderr
+    assert not any("ft-joystick" in cmd for cmd in run.seen.values())
     assert run.leftovers() == {}
 
 

@@ -92,16 +92,42 @@ def test_randomized_operator_soak(franky_sim_proc, record_property):
         rig.close()
 
     statuses = rec.statuses
+    if os.environ.get("FT_SOAK_DUMP"):  # for offline analysis of a failure
+        np.savez(
+            os.environ["FT_SOAK_DUMP"],
+            q=np.array([s.q for s in statuses]),
+            dq=np.array([s.dq for s in statuses]),
+            twist=np.array([s.twist for s in statuses]),
+            mode=np.array([s.mode for s in statuses]),
+            limiters=np.array(["|".join(s.limiters) for s in statuses]),
+        )
     assert len(statuses) > SOAK_S * 50
-    teleop = [s for s in statuses if s.mode == "teleop"]
-    for s in teleop:
+    worst_i = 0
+    for i, s in enumerate(statuses):
+        if s.mode != "teleop":
+            continue
         p = np.array(s.ee_pos)
         worst_ws = max(worst_ws, float(np.max(np.r_[lower - p, p - upper])))
-        worst_joint = min(worst_joint, float(np.min(np.r_[np.array(s.q) - jl, ju - np.array(s.q)])))
+        margin = float(np.min(np.r_[np.array(s.q) - jl, ju - np.array(s.q)]))
+        if margin < worst_joint:
+            worst_joint, worst_i = margin, i
+
+    def context(i):  # the statuses leading to the closest joint-limit approach
+        rows = []
+        for s in statuses[max(0, i - 40) : i + 3 : 4]:
+            q = np.array(s.q)
+            m = np.r_[q - jl, ju - q]
+            j = int(np.argmin(m)) % 7
+            rows.append(
+                f"seq {s.seq} {s.mode:6s} j{j + 1} margin {m.min():+.4f} q{j + 1} {q[j]:+.4f} "
+                f"dq{j + 1} {s.dq[j]:+.3f} twist {np.round(s.twist, 3)} lim {s.limiters}"
+            )
+        return "\n".join(rows)
+
     modes = {m: sum(s.mode == m for s in statuses) for m in ("idle", "teleop", "homing", "locked")}
     limiters = {
         lim: sum(lim in s.limiters for s in statuses)
-        for lim in ("workspace", "singularity", "joint")
+        for lim in ("workspace", "floor", "singularity", "joint")
     }
     for k, v in {**events, **modes, **limiters}.items():
         record_property(k, v)
@@ -121,5 +147,7 @@ def test_randomized_operator_soak(franky_sim_proc, record_property):
     ][:3]
     assert modes["teleop"] > 0.2 * len(statuses)  # the operator really drove the arm
     assert worst_ws < 2e-3, f"left the workspace by {worst_ws * 1e3:.2f} mm"
-    assert worst_joint > 0.0, f"crossed a joint limit by {-worst_joint:.4f} rad"
+    assert worst_joint > 0.0, (
+        f"crossed a joint limit by {-worst_joint:.4f} rad:\n{context(worst_i)}"
+    )
     assert min_sigma > g.sigma_stop - 0.005, min_sigma

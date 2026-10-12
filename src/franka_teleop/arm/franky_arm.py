@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
 from collections.abc import Callable, Sequence
 
 import franky
@@ -43,6 +44,11 @@ def call[T](fn: Callable[[], T]) -> T:
         raise ArmError(f"motion type change while moving: {e}") from e
     except franky.Exception as e:
         raise ArmError(str(e)) from e
+    except Exception as e:
+        # franky also raises classes outside franky.Exception (e.g. a plain RuntimeError when
+        # its motion planner fails, GripperException, MotionReuseException). The node must see
+        # them as arm errors rather than crash.
+        raise ArmError(f"{type(e).__name__}: {e}") from e
 
 
 class FrankyArm:
@@ -98,10 +104,26 @@ class FrankyArm:
         )
         return np.asarray(jac, dtype=float)
 
+    KEYPOINT_FRAMES = ("Joint4", "Joint5", "Joint6", "Joint7", "Flange")
+
+    def keypoints_at(self, q: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+        if self._F_T_EE is None:
+            self.read()
+        q = np.asarray(q, dtype=float)
+        model, out = self.robot.model, []
+        for name in self.KEYPOINT_FRAMES:
+            frame = getattr(franky.Frame, name)
+            T = np.asarray(model.pose(frame, q, self._F_T_EE, self._EE_T_K).matrix, dtype=float)
+            J = np.asarray(model.zero_jacobian(frame, q, self._F_T_EE, self._EE_T_K), dtype=float)
+            out.append((T[:3, 3], J[:3]))
+        return out
+
     # -- motion ------------------------------------------------------------------------------
 
     def send_twist(self, twist: np.ndarray, hold_ms: int) -> None:
         twist = np.asarray(twist, dtype=float)
+        if twist.shape != (6,) or not np.all(np.isfinite(twist)):
+            raise ArmError(f"refusing to send non-finite or malformed twist {twist}")
         motion = franky.CartesianVelocityMotion(
             franky.RobotVelocity(franky.Twist(twist[:3], twist[3:])),
             duration=franky.Duration(int(hold_ms)),
@@ -156,12 +178,20 @@ class FrankyArm:
         if self._gripper is not None:
             self._gripper.request(closed)
 
-    def close(self) -> None:
+    def close(self, timeout_s: float = 3.0) -> None:
+        """Release the robot. A running motion is first halted and allowed to come to rest;
+        only if that fails is it aborted with stop()."""
         try:
             if self.robot.is_in_control:
+                self.halt()
+                deadline = time.monotonic() + timeout_s
+                while self.robot.is_in_control and time.monotonic() < deadline:
+                    time.sleep(0.01)
+            if self.robot.is_in_control:
+                log.warning("motion still running after halt; stopping it")
                 self.stop()
         except (ArmError, ArmDisconnected) as e:
-            log.warning("stop on close failed: %s", e)
+            log.warning("halt/stop on close failed: %s", e)
         if self._gripper is not None:
             self._gripper.shutdown()
 
@@ -212,11 +242,12 @@ class _GripperWorker(threading.Thread):
                     )
                 elif closed is False:
                     self._gripper.move(self._gripper.max_width, self._speed)
+                if closed is not None:
+                    self.last_error = ""  # an error stays visible until a command succeeds
                 self.width = float(self._gripper.width)
-                self.last_error = ""
-            except franky.Exception as e:
-                self.last_error = str(e)
-                log.warning("gripper: %s", e)
+            except Exception as e:  # keep serving: a dead worker would drop every later toggle
+                self.last_error = f"{type(e).__name__}: {e}"
+                log.warning("gripper: %s", self.last_error)
             finally:
                 with self._cond:
                     self.busy = self._pending is not None

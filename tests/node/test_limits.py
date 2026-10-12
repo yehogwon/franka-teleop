@@ -170,3 +170,57 @@ def test_joint_guard_closed_loop_never_crosses_limits():
             out, _ = limit_joints(twist, q, J, LOWER, UPPER, GUARD)
             q = q + predict_joint_velocity(out, J, GUARD.damping) * dt
             assert np.all(q <= UPPER + 0.01) and np.all(q >= LOWER - 0.01)
+
+
+def test_hand_keypoint_jacobian_is_v_plus_w_cross_r():
+    from franka_teleop.geometry import mat_from_quat
+    from franka_teleop.node.limits import HAND_POINTS, hand_keypoints
+
+    rng = np.random.default_rng(3)
+    for _ in range(20):
+        T = np.eye(4)
+        T[:3, :3] = mat_from_quat(rng.normal(size=4))
+        T[:3, 3] = rng.normal(size=3)
+        J, dq = rng.normal(size=(6, 7)), rng.normal(size=7)
+        v, w = (J @ dq)[:3], (J @ dq)[3:]
+        for (p, Jp), local in zip(hand_keypoints(T, J), HAND_POINTS, strict=True):
+            r = T[:3, :3] @ local
+            assert np.allclose(p, T[:3, 3] + r)
+            assert np.allclose(Jp @ dq, v + np.cross(w, r))
+
+
+def test_limit_floor_ramps_descent_to_zero_and_never_blocks_lifting():
+    from franka_teleop.node.limits import limit_floor
+
+    J = np.zeros((3, 7))
+    J[2, 0] = 1.0  # joint 0 velocity moves the keypoint vertically
+    twist, dq = np.ones(6) * 0.1, np.r_[-0.1, np.zeros(6)]  # keypoint descends at 0.1 m/s
+    point = lambda z: [(np.array([0.4, 0.0, z]), J, 0.07)]  # noqa: E731
+    out, lim = limit_floor(twist, dq, point(0.5), 0.0, 0.05, 0.15)
+    assert np.allclose(out, twist) and not lim  # far above the floor
+    out, lim = limit_floor(twist, dq, point(0.07 + 0.02), 0.0, 0.05, 0.15)
+    assert lim and np.allclose(out, twist * (3.0 * 0.02 / 0.1))  # gain 3/s * 2 cm
+    out, lim = limit_floor(twist, dq, point(0.06), 0.0, 0.05, 0.15)
+    assert lim and np.allclose(out, 0)  # inside the clearance: no further descent
+    out, lim = limit_floor(twist, -dq, point(0.06), 0.0, 0.05, 0.15)
+    assert not lim and np.allclose(out, twist)  # lifting is always allowed
+
+
+def test_rolling_the_hand_over_near_the_table_stops_before_contact():
+    """Closed loop: a hand 15 cm above the table keeps rolling (as in the soak failure).
+    The hand corners must stay above floor + clearance."""
+    from franka_teleop.geometry import exp_so3
+    from franka_teleop.node.limits import hand_keypoints, limit_floor
+
+    J = np.hstack([np.eye(6), np.zeros((6, 1))])  # dq[:6] is the twist
+    T = np.eye(4)
+    T[:3, :3] = np.diag([1.0, -1.0, -1.0])  # pointing down
+    T[:3, 3] = [0.45, 0.0, 0.15]
+    dt, lowest = 0.01, np.inf
+    for _ in range(1000):
+        twist = np.array([0, 0, 0, 0.6, 0, 0])
+        keypoints = [(p, Jp, 0.01) for p, Jp in hand_keypoints(T, J)]
+        out, _ = limit_floor(twist, np.r_[twist, 0.0], keypoints, 0.0, 0.05, 0.15)
+        T[:3, :3] = exp_so3(out[3:] * dt) @ T[:3, :3]
+        lowest = min(lowest, min(p[2] for p, _ in hand_keypoints(T, J)))
+    assert lowest > 0.01 - 1e-3, lowest

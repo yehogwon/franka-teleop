@@ -5,7 +5,7 @@
 [robot]
 host = "127.0.0.1"         # franky-sim binds here
 realtime = "enforce"        # libfranka realtime mode. Keep "enforce"; use FT_REALTIME=ignore only on a non-RT dev box
-dynamics_factor = 0.2       # franky relative dynamics factor: scales velocity/acceleration/jerk limits
+dynamics_factor = 0.2       # franky relative dynamics factor: scales acceleration/jerk limits
 gripper = true
 gripper_speed = 0.05        # m/s
 gripper_force = 20.0        # N, grasp force
@@ -36,7 +36,7 @@ scene_rpc_port = 5558       # viewer -> sim      SceneInfo request
 [teleop]
 rate_hz = 100.0
 cmd_timeout_ms = 150.0      # stale command -> zero velocity
-hold_ms = 100               # robot-side watchdog: each velocity target is held at most this long
+hold_ms = 100               # robot-side watchdog: each velocity target is held at most this long (<= 250)
 max_linear_speed = 0.15     # m/s at full stick and speed level 1.0
 max_angular_speed = 0.6     # rad/s
 speed_levels = [0.25, 0.5, 0.75, 1.0]
@@ -49,7 +49,10 @@ allowed_sources = ["gamepad"]  # keyboard/script are added automatically when si
 # End-effector box in the robot base frame [m]. Measure your table before the first real run.
 lower = [0.25, -0.40, 0.03]
 upper = [0.70, 0.40, 0.70]
-slow_zone = 0.05
+slow_zone = 0.05            # m: outward TCP velocity ramps to zero over this distance from a wall
+floor = 0.0                 # m: table surface height; the wrist and hand body are kept above it
+link_clearance = 0.07       # m: elbow/wrist joint frames and the flange stay this far above the floor
+hand_clearance = 0.01       # m: corners of the hand body stay this far above the floor
 
 [joint_guard]
 margin = 0.2                # rad: joint speed towards a limit ramps to zero over this distance,

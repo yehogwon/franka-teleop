@@ -84,6 +84,18 @@ def test_allowed_sources_extend_only_in_sim():
         {"input__invert": ["lin_q"]},
         {"robot__realtime": "sometimes"},
         {"robot__bogus_key": 1},
+        {"teleop__hold_ms": 1000},
+        {"teleop__cmd_timeout_ms": 0},
+        {"teleop__max_linear_speed": -0.1},
+        {"joint_guard__max_joint_speed": 0},
+        {"joint_guard__damping": 0},
+        {"robot__home_q": [0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]},  # q4 = 0 is past its limit
+        {"net__status_port": 5555},  # same as cmd_port
+        {"viewer__fps": 0},
+        {"input__deadzone": 1.0},
+        {"input__expo": 1.5},
+        {"workspace__slow_zone": 0},
+        {"robot__host": "172.16.0.2"},  # sim.toml pointed at a real arm
     ],
 )
 def test_invalid_configs_are_rejected(override):
@@ -96,3 +108,9 @@ def test_dump_toml_roundtrips(tmp_path):
     path = write_config(cfg, tmp_path / "effective.toml")
     assert load_config(path) == cfg
     assert dump_toml(cfg) == path.read_text()
+
+
+def test_real_config_may_target_loopback_for_rehearsal():
+    """The e2e tests drive the real-robot code path against franky-sim on 127.x."""
+    cfg = load_config(CONFIGS / "real.toml", robot__host="127.0.0.9")
+    assert not cfg.sim.enabled and cfg.robot.host == "127.0.0.9"

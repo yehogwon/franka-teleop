@@ -72,7 +72,7 @@ class Rig:
         self.thread = threading.Thread(target=self.server.run, daemon=True)
         self.thread.start()
         self.status_sub = transport.subscriber(self.cfg.net.connect(self.cfg.net.status_port))
-        assert transport.recv_wait(self.status_sub, NodeStatus, 3.0) is not None
+        assert transport.recv_wait(self.status_sub, NodeStatus, 10.0) is not None, "no NodeStatus"
 
     def status(self) -> NodeStatus:
         s = transport.recv_wait(self.status_sub, NodeStatus, 1.0)
@@ -329,3 +329,30 @@ def test_status_stream_rate_and_echo(rig):
     assert all(a.seq < b.seq for a, b in itertools.pairwise(seen))
     assert seen[-1].last_cmd_seq > 0 and seen[-1].session == 4242
     assert seen[-1].cmd_age_ms < 50 and rig.server.node.loop_overruns == 0
+
+
+def test_floor_guard_keeps_wrist_and_hand_off_the_table(rig, record_property):
+    """Deterministic version of a soak failure: low over the table, keep rolling the hand over.
+    Without the floor guard the wrist hit the table (franky-sim then shoved joint 6 past its
+    limit; a real arm would have taken a collision reflex)."""
+    from franka_teleop.node.limits import hand_keypoints
+
+    ws = rig.cfg.workspace
+    for _ in range(3):
+        rig.op.press("speed_up")
+        time.sleep(0.03)
+    rig.engage()
+    move_to(rig, (0.45, 0.0, 0.15))
+    lowest, saw = np.inf, False
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 8.0:
+        rig.op.set(deadman=True, angular=(1, 0, 0))
+        time.sleep(0.01)
+        a, s = rig.arm_state(), rig.status()
+        saw |= "floor" in s.limiters
+        links = [p[2] - ws.link_clearance for p, _ in rig.arm.keypoints_at(a.q)]
+        hand = [p[2] - ws.hand_clearance for p, _ in hand_keypoints(a.O_T_EE, a.jacobian)]
+        lowest = min(lowest, *links, *hand)
+    record_property("floor_min_margin_mm", (lowest - ws.floor) * 1e3)
+    assert saw and lowest - ws.floor > -3e-3, f"{(lowest - ws.floor) * 1e3:.1f} mm"
+    assert rig.status().robot_errors == ""

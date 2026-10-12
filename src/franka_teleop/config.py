@@ -7,6 +7,7 @@ that a session rehearsed in simulation runs unchanged against the real robot.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import tomllib
@@ -27,6 +28,9 @@ JOINT_UPPER = tuple(min(a, b) for a, b in zip(FR3_JOINT_UPPER, PANDA_JOINT_UPPER
 # The usual Franka "ready" pose.
 READY_Q = (0.0, -0.785398, 0.0, -2.356194, 0.0, 1.570796, 0.785398)
 
+# Upper bound on teleop.hold_ms: how long the robot may keep moving on its own if ft-node dies.
+HOLD_MS_MAX = 250
+
 # Dotted keys allowed to differ between configs/sim.toml and configs/real.toml.
 PARITY_ALLOWED_DIFF = frozenset({"robot.host", "sim.enabled"})
 
@@ -44,7 +48,8 @@ class RobotConfig(_Base):
     """FCI address of the robot, or the loopback address franky-sim binds to."""
     realtime: Literal["enforce", "ignore"] = "enforce"
     dynamics_factor: float = 0.2
-    """franky relative dynamics factor in (0, 1]: scales velocity/acceleration/jerk limits."""
+    """franky relative dynamics factor in (0, 1]: scales the acceleration and jerk (and the
+    trajectory planner's velocity) limits. Operator speed is capped by teleop.max_*_speed."""
     gripper: bool = True
     gripper_speed: float = 0.05
     gripper_force: float = 20.0
@@ -111,6 +116,13 @@ class WorkspaceConfig(_Base):
     """Axis-aligned box (robot base frame, metres) the end effector may not leave."""
     slow_zone: float = 0.05
     """Outward velocity is ramped to zero over this distance from a wall."""
+    floor: float = 0.0
+    """Table surface height [m] in the base frame. The box above limits only the TCP; the floor
+    guard keeps the wrist and the hand body above this surface too."""
+    link_clearance: float = 0.07
+    """Elbow/wrist joint frames and the flange stay this far above the floor (link radius)."""
+    hand_clearance: float = 0.01
+    """Corners of the hand body stay this far above the floor."""
 
 
 class JointGuardConfig(_Base):
@@ -176,6 +188,10 @@ class Config(_Base):
         _check(len(self.robot.collision_force_thresholds) == 6, "need 6 force thresholds")
         _check(len(self.sim.initial_q) == 7, "sim.initial_q needs 7 values")
         _check(len(self.workspace.lower) == 3 and len(self.workspace.upper) == 3, "workspace is 3D")
+        ws = self.workspace
+        _check(ws.slow_zone > 0, "workspace.slow_zone must be positive")
+        _check(ws.link_clearance >= 0 and ws.hand_clearance >= 0, "clearances must be >= 0")
+        _check(ws.floor <= ws.lower[2], "workspace.floor must be at or below workspace.lower[2]")
         jg = self.joint_guard
         _check(0 < jg.sigma_stop < jg.sigma_slow, "need 0 < joint_guard.sigma_stop < sigma_slow")
         _check(jg.margin > 0 and jg.clearance >= 0, "joint_guard.margin/clearance invalid")
@@ -198,8 +214,55 @@ class Config(_Base):
             self.teleop.hold_ms >= 1000.0 / self.teleop.rate_hz,
             "teleop.hold_ms must cover at least one node tick",
         )
+        _check(
+            self.teleop.hold_ms <= HOLD_MS_MAX,
+            f"teleop.hold_ms must be <= {HOLD_MS_MAX}: it is the robot-side watchdog",
+        )
+        tc = self.teleop
+        _check(tc.cmd_timeout_ms > 0, "teleop.cmd_timeout_ms must be positive")
+        _check(
+            tc.max_linear_speed > 0 and tc.max_angular_speed > 0, "teleop max speeds must be > 0"
+        )
+        _check(
+            jg.max_joint_speed > 0 and jg.damping > 0 and jg.rot_weight > 0,
+            "joint_guard.max_joint_speed, damping and rot_weight must be positive",
+        )
+        _check(
+            all(
+                lo <= q <= hi
+                for q, lo, hi in zip(
+                    self.robot.home_q, self.robot.joint_lower, self.robot.joint_upper, strict=True
+                )
+            ),
+            "robot.home_q must lie within the joint limits",
+        )
+        _check(self.robot.gripper_speed > 0 and self.robot.gripper_force > 0, "gripper speed/force")
+        _check(
+            all(
+                t > 0
+                for t in self.robot.collision_torque_thresholds
+                + self.robot.collision_force_thresholds
+            ),
+            "collision thresholds must be positive",
+        )
+        ports = [
+            self.net.cmd_port,
+            self.net.status_port,
+            self.net.scene_port,
+            self.net.scene_rpc_port,
+        ]
+        _check(len(set(ports)) == len(ports), "net ports must be distinct")
+        _check(self.viewer.fps > 0, "viewer.fps must be positive")
+        _check(0 <= self.input.deadzone < 1, "input.deadzone must be in [0, 1)")
+        _check(0 <= self.input.expo <= 1, "input.expo must be in [0, 1]")
         bad = set(self.input.invert) - {"lin_x", "lin_y", "lin_z", "ang_x", "ang_y", "ang_z"}
         _check(not bad, f"unknown input.invert axes: {sorted(bad)}")
+        if self.sim.enabled:
+            # A sim config pointed at a real arm would allow keyboard/script input to drive it.
+            _check(
+                _is_loopback(self.robot.host),
+                f"sim.enabled requires a loopback robot.host (franky-sim), got {self.robot.host!r}",
+            )
         return self
 
     def allowed_sources(self) -> set[str]:
@@ -211,6 +274,13 @@ class Config(_Base):
 
 class ConfigError(ValueError):
     pass
+
+
+def _is_loopback(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return host == "localhost"
 
 
 def _check(ok: bool, msg: str) -> None:

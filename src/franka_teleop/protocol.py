@@ -90,7 +90,7 @@ class NodeStatus(msgspec.Struct, kw_only=True, frozen=True):
     twist: tuple[float, ...] = (0.0,) * 6
     """Last commanded twist (vx, vy, vz, wx, wy, wz) after limits, base frame."""
     limiters: tuple[str, ...] = ()
-    """Limiters that reduced the last twist: "workspace", "joint", "singularity"."""
+    """Limiters that reduced the last twist: "workspace", "floor", "singularity", "joint"."""
     session: int = 0
     """Session currently in control (0: none)."""
     last_cmd_seq: int = -1
