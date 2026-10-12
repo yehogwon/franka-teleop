@@ -125,6 +125,10 @@ class SceneInfo(msgspec.Struct, kw_only=True, frozen=True):
     nq: int
     robot_prefix: str
     """Name prefix of the robot's joints/bodies in the scene, e.g. "robot0_"."""
+    robot_host: str = ""
+    """robot.host of ft-sim's config: the address it serves the simulated arm on. Viewers
+    compare it with their own config's robot.host, so they never show a simulation that belongs
+    to another config. "" means unknown (an ft-sim from before this field) and is accepted."""
 
 
 _encoder = msgspec.msgpack.Encoder()
