@@ -265,21 +265,50 @@ def test_terminal_keys_cbreak_and_restore():
     try:
         before = termios.tcgetattr(slave)
         assert before[3] & termios.ICANON and before[3] & termios.ECHO
+        assert before[0] & termios.IXON  # the pty default: Ctrl-S stops output
         keys = TerminalKeys(slave)
         mode = termios.tcgetattr(slave)
         assert not mode[3] & termios.ICANON and not mode[3] & termios.ECHO
         assert mode[3] & termios.ISIG  # Ctrl-C still raises SIGINT
+        assert not mode[0] & (termios.IXON | termios.IXOFF)  # no XON/XOFF flow control
         assert keys.read() == ""
-        os.write(master, b"w \x1b[Ag")
+        os.write(master, b"w \x1b[A\x13g\x11")  # Ctrl-S / Ctrl-Q arrive as (ignored) keys
         got = ""
-        while len(got) < 6 and select.select([slave], [], [], 2.0)[0]:
+        while len(got) < 8 and select.select([slave], [], [], 2.0)[0]:
             got += keys.read()
-        assert split_keys(got) == ["w", " ", "g"]
+        assert split_keys(got) == ["w", " ", "\x13", "g", "\x11"]
+        st = KeyboardState()
+        for k in split_keys(got):
+            st.feed(k, 0.0)
+        assert st.deadman and st.counters["gripper"] == 1
         keys.close()
-        assert termios.tcgetattr(slave)[3] == before[3]
+        assert termios.tcgetattr(slave)[:4] == before[:4]  # iflag (IXON) and lflag restored
         keys.close()  # idempotent
     finally:
         os.close(master)
+        os.close(slave)
+
+
+def test_hung_up_terminal_quits_and_releases_the_deadman():
+    master, slave = pty.openpty()
+    try:
+        keys = TerminalKeys(slave)
+        src = KeyboardSource(terminal=keys, clock=lambda: 0.0)
+        os.write(master, b" w")
+        for _ in range(100):
+            if src.read().deadman:
+                break
+            select.select([slave], [], [], 0.02)
+        assert src.state.deadman and not src.done
+        os.close(master)  # terminal window closed: reads now fail (EIO) or return EOF
+        master = None
+        out = src.read()
+        assert keys.hung_up and src.done
+        assert not out.deadman and out.linear == (0, 0, 0)
+        keys.close()  # the dead terminal cannot be restored: must not raise
+    finally:
+        if master is not None:
+            os.close(master)
         os.close(slave)
 
 

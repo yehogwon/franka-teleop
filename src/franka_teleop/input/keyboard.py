@@ -179,25 +179,38 @@ def split_keys(text: str) -> list[str]:
 class TerminalKeys:
     """Non-blocking key reader for a terminal in cbreak mode (no echo, no line buffering).
 
-    cbreak keeps ISIG, so Ctrl-C still raises SIGINT. :meth:`restore` puts the saved terminal
-    settings back; it runs on :meth:`close` (call it from a ``finally``) and at interpreter
-    exit. SIGTERM must be turned into a normal exit (ft-joystick does) for either to run.
+    cbreak keeps ISIG, so Ctrl-C still raises SIGINT. Output flow control (IXON/IXOFF) is
+    switched off: with it, Ctrl-S (XOFF) stops the terminal's output, and a program writing a
+    status line to it blocks until Ctrl-Q. Ctrl-S / Ctrl-Q now arrive as ordinary (ignored) keys.
+
+    :meth:`restore` puts the saved terminal settings back; it runs on :meth:`close` (call it
+    from a ``finally``) and at interpreter exit. SIGTERM and SIGHUP must be turned into a normal
+    exit (ft-joystick does) for either to run.
     """
 
     def __init__(self, fd: int | None = None):
         self.fd = sys.stdin.fileno() if fd is None else fd
         if not os.isatty(self.fd):
             raise RuntimeError("keyboard input needs a terminal, but stdin is not a TTY")
+        self.hung_up = False
+        """The terminal is gone (EOF or EIO on read): no more keys will come."""
         self._saved: list | None = termios.tcgetattr(self.fd)
         atexit.register(self.restore)
-        tty.setcbreak(self.fd, termios.TCSANOW)
+        mode = termios.tcgetattr(self.fd)
+        tty.cfmakecbreak(mode)
+        mode[tty.IFLAG] &= ~(termios.IXON | termios.IXOFF)
+        termios.tcsetattr(self.fd, termios.TCSANOW, mode)
 
     def read(self) -> str:
         """Everything typed since the last call ("" if nothing)."""
         chunks: list[bytes] = []
-        while select.select([self.fd], [], [], 0)[0]:
-            data = os.read(self.fd, 1024)
-            if not data:
+        while not self.hung_up and select.select([self.fd], [], [], 0)[0]:
+            try:
+                data = os.read(self.fd, 1024)
+            except OSError:  # EIO: the terminal was hung up
+                data = b""
+            if not data:  # readable but nothing to read: hung up
+                self.hung_up = True
                 break
             chunks.append(data)
         return b"".join(chunks).decode(errors="ignore")
@@ -216,7 +229,8 @@ class TerminalKeys:
 
 
 class KeyboardSource:
-    """Input source reading the terminal; ``done`` once ``q`` was pressed."""
+    """Input source reading the terminal; ``done`` once ``q`` was pressed or the terminal is
+    gone (which also releases a latched deadman)."""
 
     name = "keyboard"
 
@@ -238,6 +252,8 @@ class KeyboardSource:
             self.state.feed(key, now)
             if self.state.quit:
                 break  # keys typed (or pasted) after q are not applied
+        if getattr(self.terminal, "hung_up", False):
+            self.state.feed(QUIT_KEY, now)  # nobody can switch a latched deadman off any more
         return apply_invert(self.state.intent(now), self.invert)
 
     @property
