@@ -8,6 +8,7 @@
 # automatically before the first and after the last step.
 #
 # Scripts are accepted only while sim.enabled (or with "script" in teleop.allowed_sources).
+# Like every motion, gripper presses only act while the deadman is held.
 
 description = "square in the horizontal plane, gripper close/open, small yaw"
 
@@ -19,9 +20,8 @@ linear = [0.6, 0.0, 0.0]
 duration = 2.0
 linear = [0.0, 0.6, 0.0]
 
-[[step]]  # pause, deadman released, close the gripper
+[[step]]  # hold still and close the gripper (gripper actions need the deadman held)
 duration = 1.5
-deadman = false
 press = ["gripper"]
 
 [[step]]  # back
@@ -42,5 +42,4 @@ angular = [0.0, 0.0, -0.5]
 
 [[step]]  # open the gripper again
 duration = 1.5
-deadman = false
 press = ["gripper"]
