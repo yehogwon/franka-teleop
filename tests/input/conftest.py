@@ -9,10 +9,14 @@ from __future__ import annotations
 import ctypes
 import glob
 import os
+from contextlib import suppress
 
 import pytest
+import zmq
 
+from franka_teleop import transport
 from franka_teleop.input.mapping import BUTTONS, STICK_AXES, TRIGGER_AXES
+from franka_teleop.protocol import ProtocolError, TeleopCommand, decode
 
 SDL_JOYSTICK_TYPE_UNKNOWN = 0
 SDL_JOYSTICK_TYPE_GAMECONTROLLER = 1
@@ -176,3 +180,25 @@ def gamepad_reader():
     yield make
     for r in readers:
         r.close()
+
+
+# -- command stream helpers ---------------------------------------------------------------
+
+
+def cmd_sub(cfg):
+    """A non-conflating SUB on the command port: sees every command (after the slow join)."""
+    return transport.subscriber(cfg.net.connect(cfg.net.cmd_port), conflate=False)
+
+
+def drain(sock, timeout=0.0):
+    """Every queued TeleopCommand (waiting up to ``timeout`` for the first one)."""
+    out = []
+    if timeout and not sock.poll(int(timeout * 1000)):
+        return out
+    while True:
+        try:
+            data = sock.recv(zmq.NOBLOCK)
+        except zmq.Again:
+            return out
+        with suppress(ProtocolError):
+            out.append(decode(data, TeleopCommand))

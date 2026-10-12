@@ -4,7 +4,7 @@ import io
 import math
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 
 import pytest
 import zmq
@@ -14,9 +14,10 @@ from franka_teleop.config import InputConfig
 from franka_teleop.input.client import SHUTDOWN_S, JoystickClient, new_session
 from franka_teleop.input.mapping import Intent
 from franka_teleop.input.script import Script, ScriptSource
-from franka_teleop.protocol import ACTIONS, NodeStatus, ProtocolError, TeleopCommand, decode
+from franka_teleop.protocol import ACTIONS, NodeStatus, TeleopCommand
 
 from ..conftest import make_test_config
+from .conftest import cmd_sub, drain
 
 
 class FakeSource:
@@ -55,25 +56,6 @@ def status(**kw):
         frame="base",
     )
     return NodeStatus(**(defaults | kw))
-
-
-def cmd_sub(cfg):
-    """A non-conflating SUB on the command port: sees every command (after the slow join)."""
-    return transport.subscriber(cfg.net.connect(cfg.net.cmd_port), conflate=False)
-
-
-def drain(sock, timeout=0.0):
-    """Every queued TeleopCommand (waiting up to ``timeout`` for the first one)."""
-    out = []
-    if timeout and not sock.poll(int(timeout * 1000)):
-        return out
-    while True:
-        try:
-            data = sock.recv(zmq.NOBLOCK)
-        except zmq.Again:
-            return out
-        with suppress(ProtocolError):
-            out.append(decode(data, TeleopCommand))
 
 
 @contextmanager

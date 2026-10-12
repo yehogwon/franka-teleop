@@ -59,6 +59,11 @@ BUTTON_ACTIONS: Mapping[str, str] = {
     "dpdown": "speed_down",
 }
 
+LAYOUT_HELP = """\
+  hold LB = deadman        left stick = forward/back, left/right    RT/LT = up/down
+  right stick = yaw (x), pitch (y)    d-pad left/right = roll    d-pad up/down = speed +/-
+  A gripper   B stop   X base/tool frame   Y home   Start recover"""
+
 # Names accepted by input.invert, in (linear..., angular...) order.
 INTENT_AXES = ("lin_x", "lin_y", "lin_z", "ang_x", "ang_y", "ang_z")
 
