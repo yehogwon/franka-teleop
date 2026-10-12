@@ -9,6 +9,7 @@ from franka_teleop.input.keyboard import (
     ACTION_KEYS,
     HOLD_FIRST_S,
     HOLD_REPEAT_S,
+    KEY_HELP,
     MOTION_KEYS,
     KeyboardSource,
     KeyboardState,
@@ -111,12 +112,42 @@ def test_deadman_toggles_and_is_latched():
     assert not st.intent(1.0).deadman
 
 
-def test_deadman_autorepeat_does_not_flicker():
+def test_held_space_fails_safe_and_does_not_flap():
+    """Holding space: ON at the press, OFF at the first autorepeat, and OFF from then on."""
     st = KeyboardState()
-    autorepeat(st, " ", 0.0, 2.0)
+    seen = []
+    st.feed(" ", 0.0)
+    seen.append(st.deadman)
+    t = 0.5
+    while t <= 2.0:  # autorepeat at 30 Hz
+        st.feed(" ", t)
+        seen.append(st.deadman)
+        t += 0.033
+    assert seen[0] and not any(seen[1:])
+    st.feed(" ", 3.0)  # a fresh tap after the key was released switches it on again
     assert st.deadman
-    st.feed(" ", 3.0)
-    assert not st.deadman
+
+
+def test_deadman_off_is_immediate_within_the_hold_window():
+    """Review r3: a quick 'stop' tap right after switching on, or hammering space, must
+    switch the deadman off and keep it off."""
+    st = KeyboardState()
+    st.feed("w", 0.0)
+    st.feed(" ", 0.05)  # deadman ON
+    for k in range(1, 20):  # 'w' autorepeating
+        st.feed("w", 0.05 + k / 30)
+    assert st.intent(0.3).deadman and st.intent(0.3).linear == (1, 0, 0)
+    st.feed(" ", 0.35)  # 0.3 s after switching on: well inside HOLD_FIRST_S
+    out = st.intent(0.36)
+    assert not out.deadman and out.linear == (0, 0, 0)
+    t = 0.45
+    while t < 1.5:  # panicked operator hammers space every 0.1 s
+        st.feed(" ", t)
+        assert not st.intent(t).deadman, t
+        t += 0.1
+    assert not st.intent(1.46).deadman
+    st.feed(" ", 1.45 + HOLD_FIRST_S + 0.01)  # a deliberate tap after a pause: ON again
+    assert st.deadman
 
 
 def test_deadman_off_forgets_held_motion():
@@ -153,6 +184,39 @@ def test_quit_releases_deadman_and_unknown_keys_are_ignored():
     assert st.deadman and not st.quit and st.intent(0.1).linear == (0, 0, 0)
     st.feed("q", 0.2)
     assert st.quit and not st.intent(0.2).deadman
+
+
+def test_keys_after_quit_are_ignored():
+    st = KeyboardState()
+    st.feed(" ", 0.0)
+    st.feed("w", 0.1)
+    st.feed("q", 0.2)
+    for k in " wg":
+        st.feed(k, 0.3)
+    out = st.intent(0.3)
+    assert not out.deadman and out.linear == (0, 0, 0) and out.counters["gripper"] == 0
+
+
+def test_keys_after_quit_in_the_same_read_are_ignored():
+    """Review r4: 'q' followed by 'w' and space in one terminal read (typed fast or pasted)."""
+    term = FakeTerminal()
+    now = [0.0]
+    src = KeyboardSource(terminal=term, clock=lambda: now[0])
+    src.read()
+    now[0] = 1.0
+    term.pending = "qw "
+    out = src.read()
+    assert src.done and not out.deadman and out.linear == (0, 0, 0)
+    term.pending = " g"  # a deadman latched ON before q is released too
+    out = src.read()
+    assert not out.deadman and out.counters["gripper"] == 0
+
+
+def test_key_help_explains_base_and_tool_frame():
+    text = " ".join(KEY_HELP.split())
+    assert "Directions are for the base frame" in text
+    assert "In tool frame they follow the tool's axes" in text
+    assert "base -y" in text and "moves it down, along the approach" in text
 
 
 def test_split_keys_drops_escape_sequences():

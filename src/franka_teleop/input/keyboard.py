@@ -63,7 +63,9 @@ KEY_HELP = """\
 keyboard: space = deadman on/off (latched)   q = quit (Ctrl-C works too)
   w/s forward/back   a/d left/right   r/f up/down
   j/l yaw left/right   i/k pitch up/down   u/o roll left/right
-  g gripper   h home   b stop   c recover   t base/tool frame   ]/[ speed up/down"""
+  g gripper   h home   b stop   c recover   t base/tool frame   ]/[ speed up/down
+  Directions are for the base frame. In tool frame they follow the tool's axes: at the ready
+  pose a (left) moves the hand to base -y and r (up) moves it down, along the approach."""
 
 _OPPOSITE = {
     k: next(o for o, (ax2, s2) in MOTION_KEYS.items() if ax2 == ax and s2 == -s)
@@ -76,11 +78,17 @@ class KeyboardState:
 
     - Motion keys are held while within their hold window; each axis is +1, -1 or 0. Pressing a
       key releases its opposite at once, so reversing does not wait for the old window to end.
-    - Action keys and the deadman toggle fire on *fresh* presses only: an event that arrives
-      while the key is still within its hold window is autorepeat and is ignored (otherwise
-      holding ``g`` would toggle the gripper ~30 times a second). Two deliberate taps of the same
-      key must therefore be more than :data:`HOLD_FIRST_S` apart.
+    - Action keys fire on *fresh* presses only: an event that arrives while the key is still
+      within its hold window is autorepeat and is ignored (otherwise holding ``g`` would toggle
+      the gripper ~30 times a second). Two deliberate taps of the same key must therefore be
+      more than :data:`HOLD_FIRST_S` apart.
+    - The deadman is asymmetric. Switching it ON needs a fresh space press, like an action key.
+      Switching it OFF does not: any space event while it is ON, autorepeat or a quick second
+      tap included, turns it off at once. So a held, auto-repeating or hammered space fails
+      safe: it can switch the deadman off but never flaps it back on (that needs a fresh press,
+      i.e. space released for its hold window first).
     - Switching the deadman off also forgets held motion keys.
+    - After ``q`` (quit) every further key is ignored and the deadman stays off.
     """
 
     def __init__(self, hold_first_s: float = HOLD_FIRST_S, hold_repeat_s: float = HOLD_REPEAT_S):
@@ -98,7 +106,14 @@ class KeyboardState:
         self._until[key] = t + self.hold_first_s if fresh else max(until, t + self.hold_repeat_s)
         return fresh
 
+    def _deadman_off(self) -> None:
+        self.deadman = False
+        for k in MOTION_KEYS:
+            self._until.pop(k, None)
+
     def feed(self, key: str, t: float) -> None:
+        if self.quit:
+            return
         if key.isalpha():
             key = key.lower()  # Shift / Caps Lock
         if key in MOTION_KEYS:
@@ -108,14 +123,16 @@ class KeyboardState:
             if self._event(key, t):
                 self.counters[ACTION_KEYS[key]] += 1
         elif key == DEADMAN_KEY:
-            if self._event(key, t):
-                self.deadman = not self.deadman
-                if not self.deadman:
-                    for k in MOTION_KEYS:
-                        self._until.pop(k, None)
+            # Always extend the window (also when switching off), so that autorepeat or
+            # hammering after an OFF does not count as a fresh press that turns it back on.
+            fresh = self._event(key, t)
+            if self.deadman:
+                self._deadman_off()
+            elif fresh:
+                self.deadman = True
         elif key == QUIT_KEY:
             self.quit = True
-            self.deadman = False
+            self._deadman_off()
 
     def held(self, key: str, t: float) -> bool:
         until = self._until.get(key)
@@ -219,6 +236,8 @@ class KeyboardSource:
         now = self.clock()
         for key in split_keys(self.terminal.read()):
             self.state.feed(key, now)
+            if self.state.quit:
+                break  # keys typed (or pasted) after q are not applied
         return apply_invert(self.state.intent(now), self.invert)
 
     @property
