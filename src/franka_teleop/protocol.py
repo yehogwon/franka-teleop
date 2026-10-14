@@ -49,7 +49,8 @@ class TeleopCommand(msgspec.Struct, kw_only=True, frozen=True):
     t_send: float
     """Client wall-clock time [s] (time.time()); only comparable to the node's clock on one host."""
     source: str
-    """"gamepad" | "keyboard" | "script"."""
+    """"gamepad" | "keyboard" | "script". The web joystick (ft-joystick --device webpad) drives an
+    SDL virtual pad and reports "gamepad", like a physical pad."""
     deadman: bool
     linear: tuple[float, float, float] = (0.0, 0.0, 0.0)
     angular: tuple[float, float, float] = (0.0, 0.0, 0.0)

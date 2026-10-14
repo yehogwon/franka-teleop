@@ -42,14 +42,14 @@ def make_test_config(host: str | None = None, **overrides) -> Config:
         f"net__{name}": free_port()
         for name in ("cmd_port", "status_port", "scene_port", "scene_rpc_port")
     }
-    return load_config(
-        CONFIGS / "sim.toml",
-        robot__host=host or free_loopback_host(),
-        robot__realtime="ignore",
-        viewer__web_port=free_port(),
+    defaults = {
+        "robot__host": host or free_loopback_host(),
+        "robot__realtime": "ignore",
+        "viewer__web_port": free_port(),
+        "input__webpad_port": free_port(),
         **ports,
-        **overrides,
-    )
+    }
+    return load_config(CONFIGS / "sim.toml", **(defaults | overrides))
 
 
 class SimHandle:

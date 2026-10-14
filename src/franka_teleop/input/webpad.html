@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Web joystick</title>
+<style>
+  :root {
+    --bg: #f4f6f9; --fg: #1d2733; --muted: #66727f; --body: #e1e6ec; --ctl: #ffffff;
+    --edge: #98a5b3; --on: #2b8a3e; --act: #1c6fc0; --danger: #c92a2a; --knob: #c8d0d9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15181c; --fg: #e8ecf0; --muted: #9aa5b1; --body: #22272d; --ctl: #2f353c;
+      --edge: #5a6570; --on: #37b24d; --act: #4dabf7; --danger: #ff6b6b; --knob: #46505a;
+    }
+  }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 12px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif;
+    user-select: none; -webkit-user-select: none; touch-action: none; overscroll-behavior: none;
+  }
+  #wrap { max-width: 720px; margin: 0 auto; padding: 4px 6px 6px; box-sizing: border-box; }
+  #bar { display: flex; align-items: center; gap: 6px; min-height: 24px; flex-wrap: wrap; }
+  #dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  #dot.ok { background: var(--on); }
+  #dot.bad { background: var(--danger); }
+  #msg { flex: 1 1 auto; }
+  #take {
+    font: inherit; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--act);
+    background: var(--act); color: #fff; cursor: pointer; display: none;
+  }
+  #help { color: var(--muted); margin: 2px 0 0; }
+  svg { width: 100%; height: auto; display: block; touch-action: none; outline: none; }
+  svg.off .ctl, svg.off .knob { opacity: 0.45; }
+  .base { fill: var(--body); stroke: var(--edge); stroke-width: 1; }
+  .ctl { fill: var(--ctl); stroke: var(--edge); stroke-width: 1.5; cursor: pointer; }
+  .ctl.on { fill: var(--act); stroke: var(--act); }
+  .ctl.deadman.on { fill: var(--on); stroke: var(--on); }
+  .knob { fill: var(--knob); stroke: var(--edge); stroke-width: 1.5; pointer-events: none; }
+  .knob.on { fill: var(--act); stroke: var(--act); }
+  .fill { fill: var(--act); pointer-events: none; }
+  .lbl {
+    font-size: 11px; font-weight: 650; fill: var(--fg); text-anchor: middle;
+    dominant-baseline: central; pointer-events: none;
+  }
+  .lbl.on { fill: #fff; }
+  .hint { font-size: 8.5px; fill: var(--muted); text-anchor: middle; pointer-events: none; }
+  .flash { animation: flash 0.25s 3; }
+  @keyframes flash { 50% { background: var(--danger); } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <span id="dot"></span><span id="msg">connecting…</span>
+    <button id="take" type="button">Take control</button>
+  </div>
+  <svg id="pad" viewBox="0 0 300 324" tabindex="0" aria-label="virtual gamepad"></svg>
+  <div id="help">Hold <b>LB</b> (or the <b>space bar</b>) while moving a stick. Let go to stop.</div>
+</div>
+<script>
+"use strict";
+// Pad state in SDL GameController terms (sticks -1..1 with +y down, triggers 0..1), the same
+// names ft-joystick's gamepad mapping reads. The server applies it to an SDL virtual pad.
+const NS = "http://www.w3.org/2000/svg";
+const BUTTONS = ["a", "b", "x", "y", "back", "guide", "start", "leftstick", "rightstick",
+  "leftshoulder", "rightshoulder", "dpup", "dpdown", "dpleft", "dpright"];
+const AXES = ["leftx", "lefty", "rightx", "righty", "lefttrigger", "righttrigger"];
+const HEARTBEAT_MS = 50;
+
+const svg = document.getElementById("pad");
+const msgEl = document.getElementById("msg");
+const dotEl = document.getElementById("dot");
+const takeEl = document.getElementById("take");
+
+const controls = {};         // id -> control
+const pointers = new Map();  // pointerId -> {id, x, y} (svg coords)
+let spaceHeld = false;
+let role = "none";           // "controller" | "spectator" | "none" (disconnected)
+let ws = null;
+let seq = 0;
+
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  (parent || svg).appendChild(e);
+  return e;
+}
+function text(x, y, s, cls) { const t = el("text", { x, y, class: cls }); t.textContent = s; return t; }
+
+function button(id, btn, shape, label, hint, hx, hy) {
+  const g = el("g", {});
+  const s = shape.r
+    ? el("circle", { cx: shape.x, cy: shape.y, r: shape.r, class: "ctl" }, g)
+    : el("rect", { x: shape.x, y: shape.y, width: shape.w, height: shape.h, rx: 6, class: "ctl" }, g);
+  if (btn === "leftshoulder") s.classList.add("deadman");
+  s.dataset.ctl = id;
+  const cx = shape.r ? shape.x : shape.x + shape.w / 2, cy = shape.r ? shape.y : shape.y + shape.h / 2;
+  const l = text(cx, cy, label, "lbl"); g.appendChild(l);
+  if (hint) text(hx ?? cx, hy ?? cy + (shape.r || shape.h / 2) + 9, hint, "hint");
+  controls[id] = { kind: "button", button: btn, shape: s, label: l };
+}
+
+function stick(id, cx, cy, xa, ya, hint) {
+  const R = 46;
+  const base = el("circle", { cx, cy, r: R, class: "ctl base" });
+  base.dataset.ctl = id;
+  el("circle", { cx, cy, r: 3, class: "knob", opacity: 0.6 });
+  const knob = el("circle", { cx, cy, r: 19, class: "knob" });
+  text(cx, cy + R + 10, hint, "hint");
+  controls[id] = { kind: "stick", cx, cy, R, xa, ya, knob };
+}
+
+function trigger(id, axis, x, y, w, h, label, hint) {
+  const r = el("rect", { x, y, width: w, height: h, rx: 6, class: "ctl" });
+  r.dataset.ctl = id;
+  const fill = el("rect", { x: x + 3, y: y + h - 3, width: w - 6, height: 0, rx: 4, class: "fill" });
+  text(x + w / 2, y + 11, label, "lbl");
+  text(x + w / 2, y + h + 9, hint, "hint");
+  controls[id] = { kind: "trigger", axis, x, y, w, h, fill };
+}
+
+// Layout: Xbox style, sized for a ~300 px wide panel (viewBox units ~ CSS px there).
+trigger("lt", "lefttrigger", 4, 4, 38, 82, "LT", "down");
+trigger("rt", "righttrigger", 258, 4, 38, 82, "RT", "up");
+button("lb", "leftshoulder", { x: 48, y: 4, w: 86, h: 30 }, "LB", "deadman (hold / space)");
+button("rb", "rightshoulder", { x: 166, y: 4, w: 86, h: 30 }, "RB", "");
+button("back", "back", { x: 130, y: 66, r: 11 }, "⧉", "back");
+button("start", "start", { x: 170, y: 66, r: 11 }, "≡", "recover");
+stick("ls", 80, 138, "leftx", "lefty", "move: fwd/back, left/right");
+button("y", "y", { x: 222, y: 110, r: 14 }, "Y", "home", 222, 133);
+button("x", "x", { x: 193, y: 138, r: 14 }, "X", "frame", 193, 160);
+button("b", "b", { x: 251, y: 138, r: 14 }, "B", "stop", 251, 160);
+button("a", "a", { x: 222, y: 166, r: 14 }, "A", "grip", 222, 189);
+button("up", "dpup", { x: 68, y: 226, w: 24, h: 24 }, "▲", "");
+button("down", "dpdown", { x: 68, y: 274, w: 24, h: 24 }, "▼", "");
+button("left", "dpleft", { x: 44, y: 250, w: 24, h: 24 }, "◀", "");
+button("right", "dpright", { x: 92, y: 250, w: 24, h: 24 }, "▶", "");
+text(80, 312, "▲▼ speed   ◀▶ roll", "hint");
+stick("rs", 222, 258, "rightx", "righty", "yaw ↔ / pitch ↕");
+
+function svgPoint(e) {
+  const p = svg.createSVGPoint();
+  p.x = e.clientX; p.y = e.clientY;
+  return p.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+// Recompute the whole pad from the pointers and keys currently down, redraw, send.
+function refresh() {
+  const axes = Object.fromEntries(AXES.map((a) => [a, 0]));
+  const buttons = Object.fromEntries(BUTTONS.map((b) => [b, false]));
+  if (role === "controller") {
+    if (spaceHeld) buttons.leftshoulder = true;
+    for (const { id, x, y } of pointers.values()) {
+      const c = controls[id];
+      if (c.kind === "button") buttons[c.button] = true;
+      else if (c.kind === "stick") {
+        let dx = (x - c.cx) / c.R, dy = (y - c.cy) / c.R;
+        const m = Math.hypot(dx, dy);
+        if (m > 1) { dx /= m; dy /= m; }
+        axes[c.xa] = dx; axes[c.ya] = dy;
+      } else if (c.kind === "trigger") {
+        axes[c.axis] = Math.min(1, Math.max(0, (c.y + c.h - y) / (c.h - 18)));
+      }
+    }
+  }
+  for (const c of Object.values(controls)) {
+    if (c.kind === "button") {
+      const on = buttons[c.button];
+      c.shape.classList.toggle("on", on); c.label.classList.toggle("on", on);
+    } else if (c.kind === "stick") {
+      const dx = axes[c.xa], dy = axes[c.ya];
+      c.knob.setAttribute("cx", c.cx + dx * c.R); c.knob.setAttribute("cy", c.cy + dy * c.R);
+      c.knob.classList.toggle("on", dx !== 0 || dy !== 0);
+    } else {
+      const fh = (c.h - 6) * axes[c.axis];
+      c.fill.setAttribute("y", c.y + c.h - 3 - fh); c.fill.setAttribute("height", fh);
+    }
+  }
+  current = { axes, buttons };
+  send();
+}
+let current = null;
+
+function send() {
+  if (role !== "controller" || !ws || ws.readyState !== WebSocket.OPEN || !current) return;
+  ws.send(JSON.stringify({ type: "state", seq: ++seq, axes: current.axes, buttons: current.buttons }));
+}
+setInterval(send, HEARTBEAT_MS);  // also a heartbeat: the server releases a silent pad
+
+function releaseAll() { pointers.clear(); spaceHeld = false; refresh(); }
+
+svg.addEventListener("pointerdown", (e) => {
+  const id = e.target.dataset ? e.target.dataset.ctl : undefined;
+  if (!id || role !== "controller") return;
+  e.preventDefault();
+  svg.focus({ preventScroll: true });
+  svg.setPointerCapture(e.pointerId);
+  const p = svgPoint(e);
+  pointers.set(e.pointerId, { id, x: p.x, y: p.y });
+  refresh();
+});
+svg.addEventListener("pointermove", (e) => {
+  const ptr = pointers.get(e.pointerId);
+  if (!ptr) return;
+  const p = svgPoint(e);
+  ptr.x = p.x; ptr.y = p.y;
+  refresh();
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+  svg.addEventListener(type, (e) => { if (pointers.delete(e.pointerId)) refresh(); });
+}
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "Space") return;
+  e.preventDefault();
+  if (!e.repeat && !spaceHeld) { spaceHeld = true; refresh(); }
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code !== "Space") return;
+  e.preventDefault();
+  spaceHeld = false; refresh();
+});
+// Anything that can swallow a key-up or pointer-up releases the whole pad.
+window.addEventListener("blur", releaseAll);
+window.addEventListener("pagehide", releaseAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
+svg.addEventListener("contextmenu", (e) => e.preventDefault());
+
+function show(kind, msg, takeable) {
+  dotEl.className = kind; msgEl.textContent = msg;
+  takeEl.style.display = takeable ? "inline-block" : "none";
+  svg.classList.toggle("off", role !== "controller");
+}
+
+takeEl.addEventListener("click", () => {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "take" }));
+});
+
+function connect() {
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
+  ws = new WebSocket(url);
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "role") {
+      const was = role;
+      role = m.role;
+      if (role !== was) releaseAll();  // a new holder starts from a released pad
+      const others = m.pages > 1 ? ` · ${m.pages} pages open` : "";
+      if (role === "controller") show("ok", "You hold the pad" + others, false);
+      else if (m.held) show("", "Another page holds the pad", true);
+      else show("", "The pad is free", true);
+    } else if (m.type === "rumble") {
+      document.body.classList.remove("flash"); void document.body.offsetWidth;
+      document.body.classList.add("flash");
+      if (navigator.vibrate) navigator.vibrate(m.ms);
+    }
+  };
+  ws.onclose = () => {
+    role = "none"; releaseAll();
+    show("bad", "Disconnected from ft-joystick; retrying…", false);
+    setTimeout(connect, 1000);
+  };
+}
+refresh();
+connect();
+</script>
+</body>
+</html>

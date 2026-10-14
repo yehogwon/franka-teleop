@@ -43,7 +43,7 @@ speed_levels = [0.25, 0.5, 0.75, 1.0]
 initial_speed_level = 1
 default_frame = "base"      # "base" or "tool"
 operator_yaw_deg = 0.0      # 0: operator behind the robot looking along +x; 180: facing it
-allowed_sources = ["gamepad"]  # keyboard/script are added automatically when sim.enabled
+allowed_sources = ["gamepad"]  # keyboard/script/webpad are added automatically when sim.enabled
 
 [workspace]
 # End-effector box in the robot base frame [m]. Measure your table before the first real run.
@@ -65,12 +65,14 @@ rot_weight = 0.2            # m: weight of rotational Jacobian rows in that sing
 probe_rad = 0.002           # rad: joint-space probe step of the singularity guard
 
 [input]
-device = "gamepad"
+device = "gamepad"          # gamepad | keyboard | script | webpad
 rate_hz = 100.0
 gamepad_index = 0
 deadzone = 0.12
 expo = 0.5
 invert = []                 # e.g. ["ang_y"] to flip pitch
+webpad_host = "127.0.0.1"   # web joystick page (device "webpad"); 0.0.0.0 exposes it to the LAN
+webpad_port = 8081
 
 [viewer]
 fps = 60.0
