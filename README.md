@@ -40,7 +40,7 @@ Linux x86_64 only, because franky ships wheels only for that platform.
 ```bash
 uv run ft-check-joystick --once          # is the gamepad detected?
 uv run ft-teleop                         # ft-sim + ft-node + viewer + gamepad (configs/sim.toml)
-uv run ft-teleop --input keyboard        # no gamepad: drive from the terminal
+uv run ft-teleop --input keyboard        # no gamepad: type in this terminal (not the viewer)
 uv run ft-teleop --input script --script configs/scripts/demo.toml
 ```
 
@@ -69,7 +69,9 @@ ssh -L 8080:localhost:8080 server        # then open http://localhost:8080
 ```
 
 `ft-view --mode record --out run.mp4 --duration 10` and `--mode snapshot` render offscreen
-(EGL) without any display. Keyboard input works in an SSH terminal.
+(EGL) without any display. Keyboard input works in an SSH terminal: keep that terminal
+focused while you watch the browser. Keys pressed in the browser tab move viser's camera
+(W/A/S/D/Q/E), not the robot.
 
 `ft-view` draws ft-sim's full scene in simulation. With a robot config (`sim.enabled = false`)
 it always draws the arm from ft-node's joint states and never shows a simulator. If an ft-view
@@ -102,11 +104,17 @@ face the robot, set `teleop.operator_yaw_deg = 180`. In tool frame, "up" moves a
 direction (out of the fingers). Before the first real run, use `ft-check-joystick` to check the
 directions on your pad.
 
-Keyboard (`--input keyboard`): `space` toggles the deadman (terminals have no key-up events).
+Keyboard (`--input keyboard`) reads the **terminal** that runs `ft-teleop` (or
+`ft-joystick`). The viewers only display: the browser viewer uses W/A/S/D/Q/E for its camera
+and the native MuJoCo window has its own key bindings, so click back into the terminal before
+typing. `space` toggles the deadman (terminals have no key-up events).
 Any space press while the deadman is on turns it off at once, and holding space leaves it off.
 `w/s a/d r/f` translate, `j/l i/k u/o` yaw, pitch and roll, `g` gripper, `h` home, `b` stop,
 `c` recover, `t` frame, `]`/`[` speed, `q` quit. Keyboard and script input are accepted only
 when `sim.enabled` is true, unless you add them to `teleop.allowed_sources`.
+
+The web viewer lists these controls in its panel (keyboard and gamepad; the one `ft-teleop`
+was started with is expanded).
 
 ## Safety design
 

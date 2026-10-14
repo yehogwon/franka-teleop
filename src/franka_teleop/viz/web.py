@@ -14,6 +14,7 @@ import mujoco
 import numpy as np
 import viser
 
+from ..input.controls import DEVICES, controls_markdown
 from .meshes import geom_poses, geom_rgba, model_meshes
 from .overlay import CameraSpec, box_edges, state_text, status_lines
 from .source import Source
@@ -21,6 +22,9 @@ from .source import Source
 STATUS_PERIOD_S = 0.2
 GROUND_RGB = (205, 214, 224)
 WORKSPACE_RGB = (38, 190, 255)
+DISPLAY_ONLY_HINT = (
+    "**Display only:** keys pressed here (W/A/S/D/Q/E) move this camera, not the robot."
+)
 
 
 def _rgb(rgba: np.ndarray) -> tuple[int, int, int]:
@@ -35,7 +39,10 @@ class WebViewer:
         port: int,
         camera: CameraSpec,
         workspace=None,
+        device: str | None = None,
     ):
+        """``device``: the operator's input device; its controls are shown expanded, the
+        others collapsed."""
         self.src = src
         self.model = src.model
         self.data = mujoco.MjData(self.model)
@@ -76,8 +83,13 @@ class WebViewer:
 
         gui = self.server.gui
         with gui.add_folder("ft-view"):
+            self._hint_md = gui.add_markdown(DISPLAY_ONLY_HINT)
             self._source_md = gui.add_markdown(self._source_text())
             self._status_md = gui.add_markdown(self._status_text())
+        self.controls_md = {}
+        for d in sorted(DEVICES, key=lambda d: d != device):
+            with gui.add_folder(f"controls: {d}", expand_by_default=d == device):
+                self.controls_md[d] = gui.add_markdown(controls_markdown(d))
         self._t_status = time.monotonic()
 
     def _add_ground(self, g: int) -> None:
@@ -157,8 +169,9 @@ def run_web(
     camera: CameraSpec,
     workspace=None,
     duration: float | None = None,
+    device: str | None = None,
 ) -> int:
-    viewer = WebViewer(src, host, port, camera, workspace)
+    viewer = WebViewer(src, host, port, camera, workspace, device)
     try:
         actual = viewer.port
         if actual != port:

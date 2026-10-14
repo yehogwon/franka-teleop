@@ -12,6 +12,8 @@ from .overlay import CameraSpec, add_workspace, viewer_rows
 from .source import Source
 
 STATUS_PERIOD_S = 0.1
+# MuJoCo's viewer has its own key bindings; keyboard teleop reads the terminal instead.
+NATIVE_HINT = "Display only: keyboard teleop reads the ft-teleop terminal"
 
 
 def run_native(
@@ -68,4 +70,7 @@ def _overlay_text(src: Source):
     rows = viewer_rows(src)
     labels = "\n".join(k for k, _ in rows)
     values = "\n".join(v for _, v in rows)
-    return (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPLEFT, labels, values)
+    return [
+        (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPLEFT, labels, values),
+        (mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_BOTTOMLEFT, NATIVE_HINT, ""),
+    ]

@@ -89,6 +89,19 @@ def test_mesh_poses_equal_mujoco_geom_poses_after_an_update(viewer):
     assert not viewer.update()
 
 
+def test_panel_says_the_viewer_is_display_only(viewer):
+    """Keys pressed in the browser move viser's camera (W/A/S/D/Q/E); the panel says where
+    keyboard teleop actually reads keys."""
+    text = viewer._hint_md.content
+    assert "Display only" in text and "W/A/S/D" in text and "not the robot" in text
+    # The key mapping is shown too, keyboard and gamepad (from input.controls).
+    assert set(viewer.controls_md) == {"keyboard", "gamepad"}
+    keyboard = viewer.controls_md["keyboard"].content
+    assert "terminal running `ft-teleop`" in keyboard
+    assert "| **space** | deadman on / off (latched) |" in keyboard
+    assert "| LB (hold) | deadman |" in viewer.controls_md["gamepad"].content
+
+
 def test_panel_marks_stale_state_and_status(viewer):
     """The panel must not say "live" forever: state and NodeStatus go stale after ~1 s."""
     src = viewer.src
@@ -137,6 +150,8 @@ def test_ft_view_web_runs_against_ft_sim(viz_sim, viz_config_path):
             str(port),
             "--duration",
             "4",
+            "--device",
+            "keyboard",
         ]
     )
     try:

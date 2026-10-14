@@ -217,6 +217,7 @@ def test_key_help_explains_base_and_tool_frame():
     assert "Directions are for the base frame" in text
     assert "In tool frame they follow the tool's axes" in text
     assert "base -y" in text and "moves it down, along the approach" in text
+    assert "type in THIS terminal" in text
 
 
 def test_split_keys_drops_escape_sequences():
@@ -247,10 +248,13 @@ def test_keyboard_source_with_fake_terminal():
     now = [0.0]
     src = KeyboardSource(invert=["lin_y"], terminal=term, clock=lambda: now[0])
     assert src.name == "keyboard"
+    # Until the deadman is on, the HUD says where to type: an operator pressing W/A/S/D in the
+    # web viewer moves its camera and nothing else.
+    assert "press space here, not in the viewer" in src.status()
     term.pending = " wa\x1b[Ag"
     out = src.read()
     assert out.deadman and out.linear == (1, -1, 0) and out.counters["gripper"] == 1
-    assert "DEADMAN ON" in src.status()
+    assert src.status() == "space = off"  # the HUD itself already shows DEADMAN
     now[0] = 1.0
     assert src.read().linear == (0, 0, 0)
     assert not src.done

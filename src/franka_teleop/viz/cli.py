@@ -100,6 +100,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="how long to wait for ft-sim (--source scene) or a first state (snapshot, record)",
     )
     parser.add_argument("--no-workspace", action="store_true", help="hide the workspace box")
+    parser.add_argument(
+        "--device",
+        choices=["gamepad", "keyboard", "script"],
+        default=None,
+        help="web: the operator's input device, whose controls the panel shows expanded "
+        "(default: input.device)",
+    )
     args = parser.parse_args(argv)
     if args.mode in ("snapshot", "record") and args.out is None:
         parser.error(f"--mode {args.mode} needs --out")
@@ -156,7 +163,14 @@ def main(argv: list[str] | None = None) -> int:
             from .web import run_web
 
             return run_web(
-                src, args.web_host, web_port, cfg.viewer.fps, camera, workspace, args.duration
+                src,
+                args.web_host,
+                web_port,
+                cfg.viewer.fps,
+                camera,
+                workspace,
+                args.duration,
+                device=args.device or cfg.input.device,
             )
         from .record import record, snapshot
 

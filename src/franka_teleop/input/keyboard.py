@@ -60,7 +60,8 @@ DEADMAN_KEY = " "
 QUIT_KEY = "q"
 
 KEY_HELP = """\
-keyboard: space = deadman on/off (latched)   q = quit (Ctrl-C works too)
+keyboard: type in THIS terminal (keys in a viewer window only move its camera)
+  space = deadman on/off (latched)   q = quit (Ctrl-C works too)
   w/s forward/back   a/d left/right   r/f up/down
   j/l yaw left/right   i/k pitch up/down   u/o roll left/right
   g gripper   h home   b stop   c recover   t base/tool frame   ]/[ speed up/down
@@ -261,7 +262,11 @@ class KeyboardSource:
         return self.state.quit
 
     def status(self) -> str:
-        return "DEADMAN ON" if self.state.deadman else "deadman off (space)"
+        if self.state.deadman:
+            return "space = off"
+        # Viewers have their own key bindings (viser moves its camera with W/A/S/D/Q/E), so
+        # an operator typing into the viewer window sees the camera move and the arm not.
+        return "deadman off: press space here, not in the viewer"
 
     def close(self) -> None:
         self.terminal.close()

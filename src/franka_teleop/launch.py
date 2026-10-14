@@ -199,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
                 return shutdown(1)
 
             if viewer != "none":
-                children.append(Child("view", [script_path("ft-view"), *common, "--mode", viewer]))
+                view_argv = [script_path("ft-view"), *common, "--mode", viewer, "--device", device]
+                children.append(Child("view", view_argv))
 
             joy_argv = [script_path("ft-joystick"), *common, "--device", device]
             if args.script:
