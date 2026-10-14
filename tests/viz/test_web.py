@@ -116,6 +116,8 @@ def test_webpad_device_embeds_the_joystick():
         assert "const port = 8189;" in html.unescape(v.webpad_html.content)
         assert v._hint_md.content == WEBPAD_HINT
         assert set(v.controls_md) == {"keyboard", "gamepad"}
+        assert "The web joystick is a gamepad" in v.controls_md["gamepad"].content
+        assert "| LB (hold) | deadman |" in v.controls_md["gamepad"].content
     finally:
         v.close()
         src.close()

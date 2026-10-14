@@ -146,9 +146,11 @@ class WebViewer:
             self._source_md = gui.add_markdown(self._source_text())
             self._status_md = gui.add_markdown(self._status_text())
         self.controls_md = {}
-        for d in sorted(DEVICES, key=lambda d: d != device):
-            with gui.add_folder(f"controls: {d}", expand_by_default=d == device):
-                self.controls_md[d] = gui.add_markdown(controls_markdown(d))
+        shown = "gamepad" if device == "webpad" else device  # the web pad is a gamepad
+        for d in sorted(DEVICES, key=lambda d: d != shown):
+            text = controls_markdown("webpad" if device == "webpad" and d == "gamepad" else d)
+            with gui.add_folder(f"controls: {d}", expand_by_default=d == shown):
+                self.controls_md[d] = gui.add_markdown(text)
         self._t_status = time.monotonic()
 
     def _add_ground(self, g: int) -> None:
