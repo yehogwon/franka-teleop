@@ -330,6 +330,13 @@ against franky-sim on a loopback address.
   the target down. The node retries a single rejection transparently. Three within 2 s halt the
   arm and require a deadman release. If the robot reports an error at the same time, the node
   latches the error mode.
+- **The web joystick depends on the browser.** Releasing LB or a stick, hiding the page or
+  losing focus stops the arm right away. Closing the tab stops it only once the browser has
+  torn the page down: 0.35-0.5 s for the viewer page with software rendering on the headless
+  test box (about 25 ms for the pad on its own). A frozen page is cut off after 250 ms. Tested in
+  Chromium only. The pad asks for its own process (`Origin-Agent-Cluster`) so the 3D view can't
+  delay it; a browser that ignores the request may stall its heartbeat when it is slow to render,
+  and the pad then reads as released (stop and go). The pad on its own page avoids that.
 - **Not tested on real hardware.** A physical gamepad's trigger ranges and rumble, a PREEMPT_RT
   laptop and the real arm can only be checked on the deployment hardware. The preflight tools
   (`ft-check-rt`, `ft-check-joystick`, `ft-check-robot`) exist for exactly that.

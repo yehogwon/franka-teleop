@@ -356,6 +356,7 @@ class WebPadSource(GamepadSource):
         self.server = server or WebPadServer(cfg.webpad_host, cfg.webpad_port, clock=clock)
         if self.server._thread is None:
             self.server.start()
+        self.pad: VirtualGamepad | None = None
         try:
             # Attach first and open the reader at the virtual pad's index, so the reader locks
             # onto it and never adopts a physical pad plugged into the same machine. The reader's
@@ -364,8 +365,11 @@ class WebPadSource(GamepadSource):
             self.pad = VirtualGamepad()
             reader = GamepadReader(self.pad.index, logger=_quiet_logger("reader"))
             if not reader.connected:
+                reader.close()
                 raise RuntimeError("the SDL virtual pad did not show up")
         except BaseException:
+            if self.pad is not None:
+                self.pad.detach()
             self.server.close()
             raise
         super().__init__(cfg, reader=reader)

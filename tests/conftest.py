@@ -3,6 +3,7 @@ ZMQ endpoint gets an ephemeral port, so tests (and parallel worktrees) never col
 
 from __future__ import annotations
 
+import contextlib
 import random
 import socket
 from pathlib import Path
@@ -19,6 +20,16 @@ def free_port(host: str = "127.0.0.1") -> int:
     with socket.socket() as s:
         s.bind((host, 0))
         return s.getsockname()[1]
+
+
+def free_ports(n: int, host: str = "127.0.0.1") -> list[int]:
+    """``n`` distinct free ports. All sockets stay bound until every port is picked, so the OS
+    cannot hand out the same ephemeral port twice (free_port() called n times can)."""
+    with contextlib.ExitStack() as stack:
+        socks = [stack.enter_context(socket.socket()) for _ in range(n)]
+        for s in socks:
+            s.bind((host, 0))
+        return [s.getsockname()[1] for s in socks]
 
 
 def free_loopback_host() -> str:
@@ -38,16 +49,18 @@ def free_loopback_host() -> str:
 
 def make_test_config(host: str | None = None, **overrides) -> Config:
     """configs/sim.toml with a private robot host, ephemeral ports and realtime=ignore."""
-    ports = {
-        f"net__{name}": free_port()
-        for name in ("cmd_port", "status_port", "scene_port", "scene_rpc_port")
-    }
+    names = (
+        "net__cmd_port",
+        "net__status_port",
+        "net__scene_port",
+        "net__scene_rpc_port",
+        "viewer__web_port",
+        "input__webpad_port",
+    )
     defaults = {
         "robot__host": host or free_loopback_host(),
         "robot__realtime": "ignore",
-        "viewer__web_port": free_port(),
-        "input__webpad_port": free_port(),
-        **ports,
+        **dict(zip(names, free_ports(len(names)), strict=True)),
     }
     return load_config(CONFIGS / "sim.toml", **(defaults | overrides))
 

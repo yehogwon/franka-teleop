@@ -77,8 +77,8 @@ def session(config_file):
         rec.stop()
         run.proc.send_signal(signal.SIGTERM)
         rc = run.wait(60)
-    assert rc == 0, run.stderr[-3000:]
-    assert "Traceback" not in run.stderr
+    assert rc == 0, f"ft-teleop exited {rc}:\n{run.stderr}"
+    assert "Traceback" not in run.stderr, run.stderr
     assert run.leftovers() == {}
 
 
