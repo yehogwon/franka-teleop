@@ -38,7 +38,7 @@ from .mapping import ZERO3, Intent
 
 log = logging.getLogger("ft-joystick")
 
-DEVICES = ("gamepad", "keyboard", "script")
+DEVICES = ("gamepad", "keyboard", "script", "webpad")
 SHUTDOWN_S = 0.3
 """Neutral, deadman-released commands are sent this long before exiting."""
 STATUS_TIMEOUT_S = 1.0
@@ -355,6 +355,16 @@ def make_source(device: str, cfg: Config, script: Path | None = None) -> InputSo
         from .keyboard import KeyboardSource
 
         return KeyboardSource(invert=cfg.input.invert)
+    if device == "webpad":
+        from .webpad import WebPadSource
+
+        try:
+            return WebPadSource(cfg.input)
+        except OSError as e:  # the port is taken
+            raise RuntimeError(
+                f"cannot serve the web joystick on {cfg.input.webpad_host}:"
+                f"{cfg.input.webpad_port}: {e} (is another ft-joystick running?)"
+            ) from e
     if device == "gamepad":
         # Imported lazily: script/keyboard runs never touch SDL.
         from .gamepad import GamepadSource
@@ -417,13 +427,28 @@ def main(argv: list[str] | None = None) -> int:
 
     from .script import ScriptError
 
+    if device == "webpad" and "webpad" not in cfg.allowed_sources():
+        # The web joystick's commands are a gamepad's (source "gamepad"), so ft-node cannot hold
+        # it back; this is where teleop.allowed_sources is enforced for it.
+        log.error(
+            "the web joystick is not allowed with this config (sim.enabled = false). It drives "
+            'the arm exactly like a gamepad; to use it on the robot, add "webpad" to '
+            "teleop.allowed_sources."
+        )
+        return 2
+    if device == "webpad" and "gamepad" not in cfg.allowed_sources():
+        log.warning(
+            "the web joystick sends gamepad commands, but ft-node accepts motion only from %s",
+            sorted(cfg.allowed_sources()),
+        )
+
     try:
         source = make_source(device, cfg, args.script)
     except (ScriptError, RuntimeError) as e:
         log.error("%s", e)
         return 2
 
-    if device not in cfg.allowed_sources():
+    if device != "webpad" and device not in cfg.allowed_sources():
         log.warning(
             "ft-node accepts motion only from %s with this config; %s commands will be ignored",
             sorted(cfg.allowed_sources()),

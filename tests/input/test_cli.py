@@ -265,3 +265,77 @@ def test_ft_check_joystick_without_gamepad():
 def test_console_scripts_are_installed():
     for name in ("ft-joystick", "ft-check-joystick"):
         assert os.access(BIN / name, os.X_OK), name
+
+
+def _wait_http(url, timeout=30.0):
+    import urllib.request
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            with urllib.request.urlopen(url, timeout=1):
+                return
+        except OSError:
+            assert time.monotonic() < deadline, f"{url} did not come up"
+            time.sleep(0.1)
+
+
+def test_ft_joystick_webpad_streams_gamepad_commands(cfg_and_file):
+    """The web joystick's commands are a gamepad's: same source, same mapping, same stream."""
+    from .test_webpad import FORWARD, RELEASED, Page
+
+    cfg, path = cfg_and_file
+    port = cfg.input.webpad_port
+    sub = cmd_sub(cfg)
+    proc = spawn("ft-joystick", "--config", path, "--device", "webpad")
+    try:
+        _wait_http(f"http://127.0.0.1:{port}/healthz")
+        page = Page(port)
+        msgs = []
+
+        def stream(state, seconds):
+            nonlocal msgs
+            t_end = time.monotonic() + seconds
+            while time.monotonic() < t_end:
+                page.send(state)
+                msgs += drain(sub, timeout=0.04)
+
+        stream(RELEASED, 0.5)
+        stream(FORWARD, 0.5)
+        page.close()
+        t_end = time.monotonic() + 0.4
+        while time.monotonic() < t_end:
+            msgs += drain(sub, timeout=0.05)
+        proc.send_signal(signal.SIGTERM)
+        msgs += collect_until_exit(proc, sub, timeout=10)
+        _out, err = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        sub.close()
+    assert proc.returncode == 0, err
+    assert "Traceback" not in err
+    assert f"web joystick: open http://localhost:{port}/" in err
+    assert {m.source for m in msgs} == {"gamepad"} and len({m.session for m in msgs}) == 1
+    moving = [m for m in msgs if m.deadman]
+    assert len(moving) > 20 and all(m.linear == (1.0, 0.0, 0.0) for m in moving)
+    first = msgs.index(moving[0])
+    assert first > 0 and not any(m.deadman for m in msgs[:first])
+    after = msgs[msgs.index(moving[-1]) + 1 :]
+    assert len(after) > 20 and not any(m.deadman for m in after)  # page closed: pad unplugged
+
+
+def test_ft_joystick_webpad_needs_opt_in_on_a_robot_config(config_file):
+    robot = make_test_config(sim__enabled=False)
+    r = run("ft-joystick", "--config", config_file(robot), "--device", "webpad", "--quiet")
+    assert r.returncode == 2
+    assert 'add "webpad" to teleop.allowed_sources' in r.stderr
+    assert "Traceback" not in r.stderr
+
+    opted_in = make_test_config(sim__enabled=False, teleop__allowed_sources=["gamepad", "webpad"])
+    r = run(
+        "ft-joystick", "--config", config_file(opted_in), "--device", "webpad",
+        "--duration", "0.5", "--quiet",
+    )  # fmt: skip
+    assert r.returncode == 0, r.stderr
+    assert "web joystick: open" in r.stderr

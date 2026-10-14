@@ -176,8 +176,10 @@ class GamepadReader:
         *,
         reconnect_interval_s: float = RECONNECT_INTERVAL_S,
         clock: Callable[[], float] = time.monotonic,
+        logger: logging.Logger | None = None,
     ):
         init()
+        self.log = logger if logger is not None else log
         self.index = index
         """SDL device index the pad is first looked for at (input.gamepad_index)."""
         self.device_index: int | None = None
@@ -261,7 +263,7 @@ class GamepadReader:
             if (d.guid, d.name) == self._identity and d.instance_id not in self._foreign
         ]
         if len(matches) > 1 and len(matches) != self._matches:
-            log.error(
+            self.log.error(
                 "%d gamepads look like the one in use (%r, GUID %s), at indices %s; not "
                 "adopting any of them. Unplug the others.",
                 len(matches),
@@ -288,7 +290,7 @@ class GamepadReader:
                 self._instance_id = joy.get_instance_id()
                 self._joy, self.kind, self.name = joy, "joystick", joy.get_name()
                 self._trigger_armed = dict.fromkeys(TRIGGER_AXES, False)
-                log.warning(
+                self.log.warning(
                     "%r (GUID %s) has no SDL GameController mapping; using a raw Xbox-style "
                     "layout. Check every axis with ft-check-joystick, or provide a mapping via "
                     "SDL_GAMECONTROLLERCONFIG.",
@@ -296,7 +298,7 @@ class GamepadReader:
                     dev.guid,
                 )
         except pygame.error as e:
-            log.warning("cannot open gamepad %d: %s", dev.index, e)
+            self.log.warning("cannot open gamepad %d: %s", dev.index, e)
             self._close_device()
             return False
         self.device_index = dev.index
@@ -305,9 +307,9 @@ class GamepadReader:
             self._identity = (dev.guid, dev.name)
             self.guid = dev.guid
             self._foreign = {d.instance_id for d in devices if d.instance_id != dev.instance_id}
-            log.info("gamepad %d connected: %s (%s)", dev.index, self.name, self.kind)
+            self.log.info("gamepad %d connected: %s (%s)", dev.index, self.name, self.kind)
         else:
-            log.info("gamepad %r is back (now index %d)", self.name, dev.index)
+            self.log.info("gamepad %r is back (now index %d)", self.name, dev.index)
         return True
 
     def _close_device(self) -> None:
@@ -322,7 +324,7 @@ class GamepadReader:
 
     def _disconnected(self) -> GamepadSnapshot:
         if self.connected:
-            log.warning(
+            self.log.warning(
                 "gamepad %r disconnected; waiting for it to come back (other pads are ignored)",
                 self.name,
             )

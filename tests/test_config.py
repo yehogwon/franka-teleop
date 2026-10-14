@@ -67,13 +67,15 @@ def test_overrides_and_realtime_env(monkeypatch):
 
 def test_allowed_sources_extend_only_in_sim():
     assert load_config(CONFIGS / "real.toml").allowed_sources() == {"gamepad"}
-    assert load_config(CONFIGS / "sim.toml").allowed_sources() == {"gamepad", "keyboard", "script"}
+    sim = load_config(CONFIGS / "sim.toml").allowed_sources()
+    assert sim == {"gamepad", "keyboard", "script", "webpad"}
 
 
 @pytest.mark.parametrize(
     "override",
     [
         {"robot__dynamics_factor": 0.0},
+        {"input__webpad_port": 8080},  # same as viewer.web_port
         {"robot__dynamics_factor": 1.5},
         {"robot__home_q": [0.0] * 6},
         {"workspace__lower": [1.0, 0.0, 0.0]},

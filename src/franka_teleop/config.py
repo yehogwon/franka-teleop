@@ -107,7 +107,9 @@ class TeleopConfig(_Base):
     """Rotation of the operator's stick frame about base z. 0: operator stands behind the robot
     looking along +x. 180: operator faces the robot."""
     allowed_sources: list[str] = msgspec.field(default_factory=lambda: ["gamepad"])
-    """Input sources allowed to move the robot. When sim.enabled, keyboard and script are added."""
+    """Input sources allowed to move the robot. When sim.enabled, keyboard, script and webpad are
+    added. "webpad" (the browser joystick) sends commands as a gamepad, so ft-joystick enforces
+    it, not ft-node."""
 
 
 class WorkspaceConfig(_Base):
@@ -147,7 +149,7 @@ class JointGuardConfig(_Base):
 
 
 class InputConfig(_Base):
-    device: Literal["gamepad", "keyboard", "script"] = "gamepad"
+    device: Literal["gamepad", "keyboard", "script", "webpad"] = "gamepad"
     rate_hz: float = 100.0
     gamepad_index: int = 0
     deadzone: float = 0.12
@@ -155,6 +157,10 @@ class InputConfig(_Base):
     """Blend between linear (0) and cubic (1) stick response."""
     invert: list[str] = msgspec.field(default_factory=list)
     """Intent axes to negate, from: lin_x lin_y lin_z ang_x ang_y ang_z."""
+    webpad_host: str = "127.0.0.1"
+    """Address the web joystick (device "webpad") serves its page on. 0.0.0.0 exposes it to the
+    LAN: anyone who can open the page can then take the virtual pad."""
+    webpad_port: int = 8081
 
 
 class ViewerConfig(_Base):
@@ -252,6 +258,10 @@ class Config(_Base):
             self.net.scene_rpc_port,
         ]
         _check(len(set(ports)) == len(ports), "net ports must be distinct")
+        _check(
+            self.viewer.web_port != self.input.webpad_port,
+            "viewer.web_port and input.webpad_port must differ",
+        )
         _check(self.viewer.fps > 0, "viewer.fps must be positive")
         _check(0 <= self.input.deadzone < 1, "input.deadzone must be in [0, 1)")
         _check(0 <= self.input.expo <= 1, "input.expo must be in [0, 1]")
@@ -268,7 +278,7 @@ class Config(_Base):
     def allowed_sources(self) -> set[str]:
         sources = set(self.teleop.allowed_sources)
         if self.sim.enabled:
-            sources |= {"keyboard", "script"}
+            sources |= {"keyboard", "script", "webpad"}
         return sources
 
 

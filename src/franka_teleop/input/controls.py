@@ -11,6 +11,7 @@ from .keyboard import ACTION_KEYS, DEADMAN_KEY, MOTION_KEYS, QUIT_KEY
 from .mapping import BUTTON_ACTIONS, DEADMAN_BUTTON
 
 DEVICES = ("keyboard", "gamepad")
+"""Devices with a controls table (the web joystick uses the gamepad's)."""
 
 # (intent axis, sign) -> direction, operator frame (see protocol.TeleopCommand).
 MOTION_LABELS: dict[tuple[int, float], str] = {
@@ -112,4 +113,11 @@ def controls_markdown(device: str) -> str:
         )
     if device == "gamepad":
         return _table("gamepad", gamepad_rows()) + f"\n\n{FRAME_NOTE}"
+    if device == "webpad":
+        return (
+            "The web joystick is a gamepad: same buttons, same mapping. Hold **LB** (or the space "
+            "bar after clicking the pad) while moving a stick.\n\n"
+            + _table("gamepad", gamepad_rows())
+            + f"\n\n{FRAME_NOTE}"
+        )
     raise ValueError(f"no controls for device {device!r}")

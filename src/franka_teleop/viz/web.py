@@ -7,6 +7,7 @@ change, so static geoms cost nothing after the first frame.
 
 from __future__ import annotations
 
+import html
 import sys
 import time
 
@@ -22,6 +23,56 @@ from .source import Source
 STATUS_PERIOD_S = 0.2
 GROUND_RGB = (205, 214, 224)
 WORKSPACE_RGB = (38, 190, 255)
+WEBPAD_HINT = (
+    "**Joystick below** (`ft-joystick --device webpad`): hold **LB**, or the space bar after "
+    "clicking the pad, while moving a stick. Keys pressed on the 3D view move the camera."
+)
+WEBPAD_HEIGHT_PX = 400
+
+# Loader for the joystick frame. The pad is served by ft-joystick on its own port, so the frame
+# cannot use a relative URL: this srcdoc page (same origin as the viewer, so it can read the
+# viewer's address) builds http://<viewer host>:<webpad port>/, waits until ft-joystick answers
+# (it starts after the viewer) and then navigates there.
+WEBPAD_LOADER = """<!doctype html><meta charset="utf-8">
+<style>body{margin:0;padding:8px;font:12px/1.4 system-ui,sans-serif;color:#66727f}
+code{font-size:11px;word-break:break-all}</style>
+<div id="m">Connecting to the web joystick…</div>
+<script>
+const port = __PORT__;
+const loc = parent.location;
+const host = loc.hostname.includes(":") ? "[" + loc.hostname + "]" : loc.hostname;
+const url = "http://" + host + ":" + port + "/";
+const viewerPort = loc.port || "80";
+let tries = 0;
+async function probe() {
+  try {
+    await fetch(url + "healthz", { mode: "no-cors", cache: "no-store" });
+    location.replace(url);
+  } catch (e) {
+    if (++tries >= 3) {
+      document.getElementById("m").innerHTML =
+        "Waiting for the web joystick at <code>" + url + "</code> " +
+        "(<code>ft-joystick --device webpad</code>, or <code>ft-teleop --input webpad</code>)." +
+        "<br><br>Over SSH, forward its port as well:<br><code>ssh -L " + viewerPort +
+        ":localhost:" + viewerPort + " -L " + port + ":localhost:" + port +
+        " &lt;server&gt;</code>";
+    }
+    setTimeout(probe, 1000);
+  }
+}
+probe();
+</script>"""
+
+
+def webpad_frame(port: int) -> str:
+    """HTML for viser's add_html: an iframe that loads the web joystick on ``port``."""
+    doc = WEBPAD_LOADER.replace("__PORT__", str(int(port)))
+    return (
+        f'<iframe title="web joystick" srcdoc="{html.escape(doc, quote=True)}" '
+        f'style="width:100%;height:{WEBPAD_HEIGHT_PX}px;border:0;display:block"></iframe>'
+    )
+
+
 DISPLAY_ONLY_HINT = (
     "**Display only:** keys pressed here (W/A/S/D/Q/E) move this camera, not the robot."
 )
@@ -40,9 +91,12 @@ class WebViewer:
         camera: CameraSpec,
         workspace=None,
         device: str | None = None,
+        webpad_port: int | None = None,
     ):
         """``device``: the operator's input device; its controls are shown expanded, the
-        others collapsed."""
+        others collapsed. ``"webpad"`` embeds the web joystick (served on ``webpad_port``)."""
+        if device == "webpad" and webpad_port is None:
+            raise ValueError("device 'webpad' needs webpad_port")
         self.src = src
         self.model = src.model
         self.data = mujoco.MjData(self.model)
@@ -82,14 +136,21 @@ class WebViewer:
             )
 
         gui = self.server.gui
+        self.webpad_html = None
+        if device == "webpad":
+            with gui.add_folder("joystick"):
+                self.webpad_html = gui.add_html(webpad_frame(webpad_port))
         with gui.add_folder("ft-view"):
-            self._hint_md = gui.add_markdown(DISPLAY_ONLY_HINT)
+            hint = WEBPAD_HINT if device == "webpad" else DISPLAY_ONLY_HINT
+            self._hint_md = gui.add_markdown(hint)
             self._source_md = gui.add_markdown(self._source_text())
             self._status_md = gui.add_markdown(self._status_text())
         self.controls_md = {}
-        for d in sorted(DEVICES, key=lambda d: d != device):
-            with gui.add_folder(f"controls: {d}", expand_by_default=d == device):
-                self.controls_md[d] = gui.add_markdown(controls_markdown(d))
+        shown = "gamepad" if device == "webpad" else device  # the web pad is a gamepad
+        for d in sorted(DEVICES, key=lambda d: d != shown):
+            text = controls_markdown("webpad" if device == "webpad" and d == "gamepad" else d)
+            with gui.add_folder(f"controls: {d}", expand_by_default=d == shown):
+                self.controls_md[d] = gui.add_markdown(text)
         self._t_status = time.monotonic()
 
     def _add_ground(self, g: int) -> None:
@@ -170,16 +231,20 @@ def run_web(
     workspace=None,
     duration: float | None = None,
     device: str | None = None,
+    webpad_port: int | None = None,
 ) -> int:
-    viewer = WebViewer(src, host, port, camera, workspace, device)
+    viewer = WebViewer(src, host, port, camera, workspace, device, webpad_port)
     try:
         actual = viewer.port
         if actual != port:
             print(f"ft-view: port {port} is busy, serving on {actual} instead", file=sys.stderr)
         print(f"ft-view: web viewer on http://{host}:{actual} ({src.describe()})", flush=True)
         if host in ("127.0.0.1", "localhost"):
+            forwards = f"-L {actual}:localhost:{actual}"
+            if device == "webpad":  # the embedded joystick is served on its own port
+                forwards += f" -L {webpad_port}:localhost:{webpad_port}"
             print(
-                f"ft-view: from another machine: ssh -L {actual}:localhost:{actual} <this-host>, "
+                f"ft-view: from another machine: ssh {forwards} <this-host>, "
                 f"then open http://localhost:{actual}",
                 flush=True,
             )

@@ -13,8 +13,9 @@ hardware changes one line of config: the robot's IP address.
  ┌─────────────┐  TeleopCommand   ┌──────────┐  franky / libfranka   ┌────────────────────────┐
  │ ft-joystick │ ───────────────▶ │ ft-node  │ ────────────────────▶ │ Franka arm             │
  │ gamepad /   │  100 Hz, ZMQ     │ deadman, │   Cartesian velocity  │   or                   │
- │ keyboard /  │ ◀─────────────── │ watchdog,│   motions, 1 kHz      │ ft-sim (franky-sim on  │
- │ script      │    NodeStatus    │ limiters │                       │ 127.0.0.1, MuJoCo)     │
+ │ web pad /   │ ◀─────────────── │ watchdog,│   motions, 1 kHz      │ ft-sim (franky-sim on  │
+ │ keyboard /  │    NodeStatus    │ limiters │                       │ 127.0.0.1, MuJoCo)     │
+ │ script      │                  │          │                       │                        │
  └─────────────┘                  └────┬─────┘                       └───────────┬────────────┘
                                        │ NodeStatus                   SceneState │ (sim only)
                                        ▼                                         ▼
@@ -40,7 +41,8 @@ Linux x86_64 only, because franky ships wheels only for that platform.
 ```bash
 uv run ft-check-joystick --once          # is the gamepad detected?
 uv run ft-teleop                         # ft-sim + ft-node + viewer + gamepad (configs/sim.toml)
-uv run ft-teleop --input keyboard        # no gamepad: type in this terminal (not the viewer)
+uv run ft-teleop --input webpad          # no gamepad: a gamepad drawn in the web viewer
+uv run ft-teleop --input keyboard        # or type in this terminal (not the viewer)
 uv run ft-teleop --input script --script configs/scripts/demo.toml
 ```
 
@@ -62,11 +64,13 @@ uv run ft-joystick                # --device gamepad | keyboard | script
 ### Headless machine / over SSH
 
 ```bash
-# on the server
-FT_REALTIME=ignore uv run ft-teleop --input keyboard --viewer web
+# on the server: robot view + a gamepad in the browser
+FT_REALTIME=ignore uv run ft-teleop --input webpad
 # on your machine
-ssh -L 8080:localhost:8080 server        # then open http://localhost:8080
+ssh -L 8080:localhost:8080 -L 8081:localhost:8081 server   # then open http://localhost:8080
 ```
+
+With `--input keyboard --viewer web` instead, only port 8080 is needed.
 
 `ft-view --mode record --out run.mp4 --duration 10` and `--mode snapshot` render offscreen
 (EGL) without any display. Keyboard input works in an SSH terminal: keep that terminal
@@ -116,6 +120,31 @@ when `sim.enabled` is true, unless you add them to `teleop.allowed_sources`.
 The web viewer lists these controls in its panel (keyboard and gamepad; the one `ft-teleop`
 was started with is expanded).
 
+### Web joystick
+
+`ft-teleop --input webpad` draws a gamepad in the web viewer's panel (`ft-joystick --device
+webpad` serves it on `input.webpad_port`, 8081; `http://localhost:8081` is the pad on its own,
+e.g. on a tablet). It has the gamepad's layout and labels: hold **LB** while moving a stick, as on
+the real pad; a stick without LB does nothing (the pad then outlines LB in red and says so). With
+a mouse, click the pad and hold the **space bar** as LB while dragging a stick (the space bar
+counts only while the pad has keyboard focus; holding it before the click works too). On a touch
+screen, hold LB with one finger and a stick with another.
+
+It talks to the robot exactly as a physical pad does. The page's state drives an SDL *virtual*
+gamepad inside `ft-joystick`, which the unchanged gamepad reader and mapping read (deadzone,
+expo, rising-edge buttons, LB re-arm), and the commands carry `source = "gamepad"`. On top of
+that, the page behaves like a wireless pad:
+
+- One page holds the pad; other pages watch and can **Take control**, which re-plugs the pad.
+- Closing the page unplugs the pad. A page that sends nothing for 250 ms (frozen tab, network
+  stall) reads as fully released, so the node halts.
+- Losing focus or hiding the page releases every button and stick.
+- Only pages served by `ft-joystick` itself, on `localhost` or an IP address, may connect, so
+  another website open in the same browser cannot drive the robot.
+
+Over SSH, forward both ports: `ssh -L 8080:localhost:8080 -L 8081:localhost:8081 server`. The
+panel prints this line if the pad can't be reached.
+
 ## Safety design
 
 The node enforces these rules itself, whatever the input device. All of them are covered by
@@ -144,6 +173,11 @@ tests (`tests/node`).
   - default joint limits are the **intersection of FR3 and Panda limits**, valid for either arm.
 - **Errors** (reflexes) latch until START. Error recovery is franky's automatic recovery.
 - **One controller.** `ft-joystick` binds the command port, so a second joystick fails to start.
+- **Web joystick only in sim by default.** The node can't tell the web pad from a physical one
+  (that is the point), so `ft-joystick` enforces it: `--device webpad` refuses to start unless
+  `"webpad"` is allowed, which `sim.enabled` does automatically. On the robot, add it to
+  `teleop.allowed_sources` deliberately. Like the node's own source check, this guards against
+  misconfiguration, not against a hostile client.
 - **No orphans.** When the session stops, through any of Ctrl-C, SIGTERM, a closed terminal
   (SIGHUP) or a child crashing, `ft-teleop` shuts down in order and halts the arm before
   disconnecting. If the launcher itself is killed, the kernel sends its children SIGTERM.
@@ -242,6 +276,7 @@ you are most likely to change:
 | `workspace.floor`, `link_clearance`, `hand_clearance` | table height and how far the wrist and hand stay above it |
 | `joint_guard.*` | joint-limit and singularity guard tuning |
 | `input.deadzone`, `expo`, `invert` | stick feel and axis inversion |
+| `input.webpad_host`, `webpad_port` | where the web joystick is served (default 127.0.0.1:8081) |
 | `net.*_port` | ZMQ ports (publishers bind on `bind_host`, subscribers connect to `connect_host`) |
 
 | Port | Publisher → subscriber | Message |
@@ -251,6 +286,7 @@ you are most likely to change:
 | 5557 | ft-sim → ft-view | `SceneState` |
 | 5558 | ft-sim ⇄ ft-view (REQ/REP) | `SceneInfo` |
 | 8080 | ft-view `--mode web` | HTTP |
+| 8081 | ft-joystick `--device webpad` | HTTP + WebSocket (pad state, JSON) |
 
 Messages are msgpack, defined in `src/franka_teleop/protocol.py`. Every message is versioned,
 and discrete actions are sent as counters, so a lost packet never loses or repeats a button
@@ -271,8 +307,11 @@ uv run ruff check src tests && uv run ruff format --check src tests
 | `e2e` | spawns the installed `ft-*` console scripts |
 | `display` | needs X or EGL |
 | `slow` | soak |
+| `browser` | drives the web pages in Chromium (`uv run playwright install chromium`; skipped without it) |
 
 Gamepad tests attach an SDL *virtual* controller, so the real pygame input path runs headless.
+The web joystick tests drive the pad page in Chromium, inside the web viewer, against
+franky-sim.
 The real-robot code path of `ft-teleop` (preflight → node → joystick) is tested end to end
 against franky-sim on a loopback address.
 
@@ -293,6 +332,13 @@ against franky-sim on a loopback address.
   the target down. The node retries a single rejection transparently. Three within 2 s halt the
   arm and require a deadman release. If the robot reports an error at the same time, the node
   latches the error mode.
+- **The web joystick depends on the browser.** Releasing LB or a stick, hiding the page or
+  losing focus stops the arm right away. Closing the tab stops it only once the browser has
+  torn the page down: 0.35-0.5 s for the viewer page with software rendering on the headless
+  test box (about 25 ms for the pad on its own). A frozen page is cut off after 250 ms. Tested in
+  Chromium only. The pad asks for its own process (`Origin-Agent-Cluster`) so the 3D view can't
+  delay it; a browser that ignores the request may stall its heartbeat when it is slow to render,
+  and the pad then reads as released (stop and go). The pad on its own page avoids that.
 - **Not tested on real hardware.** A physical gamepad's trigger ranges and rumble, a PREEMPT_RT
   laptop and the real arm can only be checked on the deployment hardware. The preflight tools
   (`ft-check-rt`, `ft-check-joystick`, `ft-check-robot`) exist for exactly that.

@@ -108,16 +108,17 @@ def build_parser() -> argparse.ArgumentParser:
     add_config_args(parser)
     parser.add_argument(
         "--input",
-        choices=["gamepad", "keyboard", "script"],
+        choices=["gamepad", "keyboard", "script", "webpad"],
         default=None,
-        help="input device (default: input.device from the config)",
+        help="input device (default: input.device from the config); webpad: a gamepad in the "
+        "browser, embedded in the web viewer",
     )
     parser.add_argument("--script", default=None, help="TOML script for --input script")
     parser.add_argument(
         "--viewer",
         choices=["auto", "native", "web", "none"],
         default="auto",
-        help="auto: native window if $DISPLAY is set, else none",
+        help="auto: web with --input webpad, else a native window if $DISPLAY is set, else none",
     )
     parser.add_argument(
         "--skip-preflight",
@@ -142,7 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         print("ft-teleop: --input script needs --script PATH", file=sys.stderr)
         return 2
     viewer = args.viewer
-    if viewer == "auto":
+    if viewer == "auto" and device == "webpad":
+        viewer = "web"  # the pad lives in the browser: show the robot next to it
+    elif viewer == "auto":
         viewer = "native" if os.environ.get("DISPLAY") else "none"
 
     with tempfile.TemporaryDirectory(prefix="ft-teleop-") as tmp:
