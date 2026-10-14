@@ -45,3 +45,9 @@ def test_keyboard_controls_say_where_to_type():
     assert "terminal running `ft-teleop`" in text and "move the camera" in text
     with pytest.raises(ValueError):
         controls_markdown("script")
+
+
+def test_webpad_controls_are_the_gamepad_table():
+    text = controls_markdown("webpad")
+    assert "hold **LB** (or the space bar" in text.replace("Hold", "hold")
+    assert "| LB (hold) | deadman |" in text and "| A | gripper" in text

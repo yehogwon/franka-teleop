@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import time
 import urllib.request
 
@@ -100,6 +101,26 @@ def test_panel_says_the_viewer_is_display_only(viewer):
     assert "terminal running `ft-teleop`" in keyboard
     assert "| **space** | deadman on / off (latched) |" in keyboard
     assert "| LB (hold) | deadman |" in viewer.controls_md["gamepad"].content
+
+
+def test_webpad_device_embeds_the_joystick():
+    """--device webpad: a joystick folder whose frame loads the pad from its own port."""
+    from franka_teleop.viz.web import WEBPAD_HINT, webpad_frame
+
+    cfg = make_test_config()
+    src = ManualSource(cfg, load_model(scene_xml("tabletop")))
+    v = WebViewer(src, "127.0.0.1", free_port(), CameraSpec(), None, "webpad", 8189)
+    try:
+        assert v.webpad_html is not None and v.webpad_html.content == webpad_frame(8189)
+        assert 'title="web joystick"' in v.webpad_html.content
+        assert "const port = 8189;" in html.unescape(v.webpad_html.content)
+        assert v._hint_md.content == WEBPAD_HINT
+        assert set(v.controls_md) == {"keyboard", "gamepad"}
+    finally:
+        v.close()
+        src.close()
+    with pytest.raises(ValueError, match="webpad_port"):
+        WebViewer(src, "127.0.0.1", free_port(), CameraSpec(), None, "webpad")
 
 
 def test_panel_marks_stale_state_and_status(viewer):

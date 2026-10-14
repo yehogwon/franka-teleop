@@ -233,6 +233,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "playwright", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pytest", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "pytest-timeout", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
     { name = "ruff", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -253,6 +254,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "playwright", specifier = "==1.64.0" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "ruff", specifier = ">=0.17.0" },
@@ -302,6 +304,16 @@ sdist = { url = "https://files.pythonhosted.org/packages/0f/62/096058bcb4b4fb28f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/77/44/37aeed50c581c76e1c5bb83b696a06f98f8ecc979ed8564dde3eef908e8b/glfw-2.10.2-py2.py3-none-manylinux2014_x86_64.whl", hash = "sha256:82daf1f87b2a48815637dc6f6720d4a55a57ba1d3683322dc20dc28065754f97", size = 246951, upload-time = "2026-07-21T14:42:29.107Z" },
     { url = "https://files.pythonhosted.org/packages/69/84/1b98671314ea5f40397586b6cd14db913de3196333be558fdc177e61708f/glfw-2.10.2-py2.py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:b860de3ca0686182483f98f3ddd12e660acf25b3e0d521450ec9a3f999f72a65", size = 248490, upload-time = "2026-07-21T14:42:32.377Z" },
+]
+
+[[package]]
+name = "greenlet"
+version = "3.5.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/6e/0091f175ccd02b02bc8811bbcbcc6ac2e980be116e3b2f7a736ca322bf84/greenlet-3.5.6.tar.gz", hash = "sha256:8e67c43bdfc88d5fee6db0d3e40175b362fc95fb85f0412d233b9b203c53a575", size = 207653, upload-time = "2026-09-14T15:42:51.806Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/6a/1594f3869c57c149abdb380492529e04d4c0229b5e4d79572c5bd0aaa673/greenlet-3.5.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:975736b002ed080d124cf81a79cb7e05cb26d6b3f5c7a7b651c0fcce70353aa1", size = 621404, upload-time = "2026-09-14T14:35:59.027Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/31/9b4e140bc24d0ad7927ebd651f5608b0acc2334d061748c3b6ad19085cfa/greenlet-3.5.6-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:3dbb4596a6a4e5d47121a33ff20533a81e60f302d9e67b69909a8bc21a43f0a7", size = 1647568, upload-time = "2026-09-14T14:35:49.787Z" },
 ]
 
 [[package]]
@@ -475,6 +487,18 @@ wheels = [
 ]
 
 [[package]]
+name = "playwright"
+version = "1.64.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "greenlet", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "pyee", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/65/8b/78c19b805d52323122385b9c3f000144608deac38635455978af6d14807b/playwright-1.64.0-py3-none-manylinux1_x86_64.whl", hash = "sha256:5a59af1b230b234008524a5d42b613b233d4256f73bc1dd25bf3f11db0c81b75", size = 48286664, upload-time = "2026-10-13T23:35:30.981Z" },
+]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -500,6 +524,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/da/a8/c5fdbeee588bb8ada9458774f43adf1bdd30bd59157055142183e769a024/pycparser-3.11.tar.gz", hash = "sha256:d875f09c3507d00e1aba0eecc6dcadc1352f30fff09dc6bff2f1c2935e97c2bc", size = 113796, upload-time = "2026-10-09T12:56:59.539Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/90/11/0e6f11117525ff0eec40ebac3d313376f102df93ca44ad9e893ee85e4f89/pycparser-3.11-py3-none-any.whl", hash = "sha256:51d5a8ba2be0bbe440b99d2112604c95bbbc3c2748a64260186c541e1729cd80", size = 51178, upload-time = "2026-10-09T12:56:58.131Z" },
+]
+
+[[package]]
+name = "pyee"
+version = "14.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1d/f1/fdedc2c75c3e31a330659c85e5793bb18b3397981fbf0844c6dee5b18926/pyee-14.0.0.tar.gz", hash = "sha256:76dd0f4314ecd27f02dc73589dea7fd3853f9b6176d8ef9b122860657e3602de", size = 98760, upload-time = "2026-08-13T04:26:11.021Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/12/5347938b1f9a6453f0dbdfcc3e2388a1320ef9b9ec17fbefbc4ab647ea98/pyee-14.0.0-py3-none-any.whl", hash = "sha256:3ac2d3229a9677f7de2c33d7f52fe25b638a46b19c413fea2edc8c6d0a644e4d", size = 15553, upload-time = "2026-08-13T04:26:09.916Z" },
 ]
 
 [[package]]

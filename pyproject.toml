@@ -41,6 +41,7 @@ environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 
 [dependency-groups]
 dev = [
+    "playwright==1.64.0",
     "pytest>=9.1.1",
     "pytest-timeout>=2.3",
     "ruff>=0.17.0",
@@ -55,6 +56,7 @@ markers = [
     "display: needs an X display (run under xvfb-run) or EGL",
     "e2e: spawns the ft-* console scripts as subprocesses",
     "slow: long-running soak tests",
+    "browser: drives the web pages in Chromium (uv run playwright install chromium)",
 ]
 
 [tool.ruff]

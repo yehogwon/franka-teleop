@@ -277,6 +277,10 @@ def test_http_routes(webpad):
     with urllib.request.urlopen(base + "/") as r:
         body = r.read().decode()
         assert r.status == 200 and r.headers["Content-Type"].startswith("text/html")
+        # Asks for its own browser process: embedded in the viewer's panel, the pad must not
+        # share a main thread with the 3D view, whose frames delayed its heartbeat by up to
+        # 0.8 s with software rendering (the pad then read as released, stop-and-go motion).
+        assert r.headers["Origin-Agent-Cluster"] == "?1"
     assert 'aria-label="virtual gamepad"' in body
     with urllib.request.urlopen(base + "/healthz") as r:
         assert r.read() == b"ok\n"

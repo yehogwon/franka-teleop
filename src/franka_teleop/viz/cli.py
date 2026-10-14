@@ -102,10 +102,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-workspace", action="store_true", help="hide the workspace box")
     parser.add_argument(
         "--device",
-        choices=["gamepad", "keyboard", "script"],
+        choices=["gamepad", "keyboard", "script", "webpad"],
         default=None,
-        help="web: the operator's input device, whose controls the panel shows expanded "
-        "(default: input.device)",
+        help="web: the operator's input device, whose controls the panel shows expanded; "
+        "webpad embeds the web joystick (default: input.device)",
     )
     args = parser.parse_args(argv)
     if args.mode in ("snapshot", "record") and args.out is None:
@@ -171,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
                 workspace,
                 args.duration,
                 device=args.device or cfg.input.device,
+                webpad_port=cfg.input.webpad_port,
             )
         from .record import record, snapshot
 

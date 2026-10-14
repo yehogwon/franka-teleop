@@ -161,6 +161,8 @@ class WebPadServer:
         self._state = NEUTRAL
         self._last_rx = -math.inf
         self.bad_messages = 0
+        self.gaps: list[float] = []
+        """Gaps longer than STALE_S between a controller's messages [s] (the pad was released)."""
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop: asyncio.Event | None = None
         self._thread: threading.Thread | None = None
@@ -229,6 +231,7 @@ class WebPadServer:
                     ("Content-Type", "text/html; charset=utf-8"),
                     ("Content-Length", str(len(self._page))),
                     ("Cache-Control", "no-store"),
+                    ("Origin-Agent-Cluster", "?1"),
                 ]
             )
             return Response(HTTPStatus.OK, "OK", headers, self._page)
@@ -284,7 +287,10 @@ class WebPadServer:
             return False
         with self._lock:
             if kind == "state" and self._controller == page:
-                self._state, self._last_rx = state, self.clock()
+                now = self.clock()
+                if now - self._last_rx > STALE_S:
+                    self.gaps.append(now - self._last_rx)
+                self._state, self._last_rx = state, now
             elif kind == "take" and self._controller != page:
                 self._take(page)
                 return True
