@@ -124,9 +124,11 @@ was started with is expanded).
 
 `ft-teleop --input webpad` draws a gamepad in the web viewer's panel (`ft-joystick --device
 webpad` serves it on `input.webpad_port`, 8081; `http://localhost:8081` is the pad on its own,
-e.g. on a tablet). It has the gamepad's layout and labels: hold **LB** while moving a stick. With
-a mouse, hold the **space bar** as LB (click the pad first) and drag a stick. On a touch screen,
-hold LB with one finger and a stick with another.
+e.g. on a tablet). It has the gamepad's layout and labels: hold **LB** while moving a stick, as on
+the real pad; a stick without LB does nothing (the pad then outlines LB in red and says so). With
+a mouse, click the pad and hold the **space bar** as LB while dragging a stick (the space bar
+counts only while the pad has keyboard focus; holding it before the click works too). On a touch
+screen, hold LB with one finger and a stick with another.
 
 It talks to the robot exactly as a physical pad does. The page's state drives an SDL *virtual*
 gamepad inside `ft-joystick`, which the unchanged gamepad reader and mapping read (deadzone,

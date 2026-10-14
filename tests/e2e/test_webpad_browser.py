@@ -139,6 +139,39 @@ def test_embedded_pad_drives_the_arm_like_a_gamepad(session, browser):
     page.close()
 
 
+def test_space_bar_first_and_a_stick_without_lb(session, browser):
+    """What an operator tries first: a stick without LB (the pad says why nothing moves), and
+    the space bar held *before* clicking the pad (it engages once the pad has focus)."""
+    cfg, rec = session
+    page, pad = open_viewer(browser, cfg)
+    page.mouse.click(300, 500)  # the 3D view: the pad loses keyboard focus
+    help_ = pad.locator("#help")
+    assert "Click the pad" in help_.inner_text()
+    page.keyboard.down("Space")  # lands on the viewer page, not the pad
+
+    cx, cy, r = stick_centre(pad)
+    page.mouse.move(cx, cy)
+    page.mouse.down()  # focuses the pad
+    page.mouse.move(cx, cy - r, steps=4)
+    time.sleep(0.3)
+    assert "the sticks do nothing without it" in help_.inner_text()
+    assert "nudge" in pad.locator('rect[data-ctl="lb"]').get_attribute("class")
+    assert rec.statuses[-1].mode == "idle"
+
+    t0 = time.time()
+    for _ in range(25):  # the still-held key's autorepeat now reaches the pad
+        page.keyboard.down("Space")
+        time.sleep(0.04)
+    t1 = time.time()
+    assert "LB held" in help_.inner_text()
+    assert "nudge" not in pad.locator('rect[data-ctl="lb"]').get_attribute("class")
+    page.keyboard.up("Space")
+    page.mouse.up()
+    moving = between(rec.statuses, t0 + 0.3, t1)
+    assert moving and all(s.mode == "teleop" for s in moving)
+    page.close()
+
+
 def test_closing_the_page_stops_the_arm(session, browser):
     cfg, rec = session
     page, pad = open_viewer(browser, cfg)

@@ -30,7 +30,10 @@
     font: inherit; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--act);
     background: var(--act); color: #fff; cursor: pointer; display: none;
   }
-  #help { color: var(--muted); margin: 2px 0 0; }
+  #help { color: var(--muted); margin: 2px 0 0; min-height: 2.7em; }
+  #help.warn { color: var(--danger); font-weight: 600; }
+  .ctl.nudge { stroke: var(--danger); stroke-width: 3; animation: nudge 0.5s infinite alternate; }
+  @keyframes nudge { to { stroke-width: 1.5; } }
   svg { width: 100%; height: auto; display: block; touch-action: none; outline: none; }
   svg.off .ctl, svg.off .knob { opacity: 0.45; }
   .base { fill: var(--body); stroke: var(--edge); stroke-width: 1; }
@@ -57,7 +60,7 @@
     <button id="take" type="button">Take control</button>
   </div>
   <svg id="pad" viewBox="0 0 300 324" tabindex="0" aria-label="virtual gamepad"></svg>
-  <div id="help">Hold <b>LB</b> (or the <b>space bar</b>) while moving a stick. Let go to stop.</div>
+  <div id="help"></div>
 </div>
 <script>
 "use strict";
@@ -73,10 +76,12 @@ const svg = document.getElementById("pad");
 const msgEl = document.getElementById("msg");
 const dotEl = document.getElementById("dot");
 const takeEl = document.getElementById("take");
+const helpEl = document.getElementById("help");
 
 const controls = {};         // id -> control
 const pointers = new Map();  // pointerId -> {id, x, y} (svg coords)
 let spaceHeld = false;
+let focused = document.hasFocus();  // keys (space = LB) reach the pad only while it has focus
 let role = "none";           // "controller" | "spectator" | "none" (disconnected)
 let ws = null;
 let seq = 0;
@@ -178,8 +183,24 @@ function refresh() {
       c.fill.setAttribute("y", c.y + c.h - 3 - fh); c.fill.setAttribute("height", fh);
     }
   }
+  // A stick or trigger without LB does nothing, as on a real pad: say so where it is noticed.
+  const deflected = AXES.some((a) => axes[a] !== 0);
+  const nudge = role === "controller" && deflected && !buttons.leftshoulder;
+  controls.lb.shape.classList.toggle("nudge", nudge);
+  helpText(nudge, buttons.leftshoulder);
   current = { axes, buttons };
   send();
+}
+
+function helpText(nudge, lb) {
+  let html;
+  if (nudge) html = "Hold <b>LB</b> (or the <b>space bar</b>): the sticks do nothing without it.";
+  else if (lb) html = "<b>LB</b> held: the arm follows the sticks. Let go to stop.";
+  else if (!focused) html = "Click the pad, then hold the <b>space bar</b> as <b>LB</b> and drag a " +
+    "stick (or hold LB with a second finger).";
+  else html = "Hold the <b>space bar</b> (LB) and drag a stick. Let go to stop.";
+  helpEl.innerHTML = html;
+  helpEl.className = nudge ? "warn" : "";
 }
 let current = null;
 
@@ -214,7 +235,8 @@ for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
 window.addEventListener("keydown", (e) => {
   if (e.code !== "Space") return;
   e.preventDefault();
-  if (!e.repeat && !spaceHeld) { spaceHeld = true; refresh(); }
+  // A space bar already held when the pad gets focus reaches it only as autorepeat.
+  if (!spaceHeld) { spaceHeld = true; refresh(); }
 });
 window.addEventListener("keyup", (e) => {
   if (e.code !== "Space") return;
@@ -222,7 +244,8 @@ window.addEventListener("keyup", (e) => {
   spaceHeld = false; refresh();
 });
 // Anything that can swallow a key-up or pointer-up releases the whole pad.
-window.addEventListener("blur", releaseAll);
+window.addEventListener("blur", () => { focused = false; releaseAll(); });
+window.addEventListener("focus", () => { focused = true; refresh(); });
 window.addEventListener("pagehide", releaseAll);
 document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
 svg.addEventListener("contextmenu", (e) => e.preventDefault());
