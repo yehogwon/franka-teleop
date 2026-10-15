@@ -3,6 +3,24 @@
 Gamepad teleoperation for Franka arms (FR3 or Panda). A session rehearsed in simulation runs
 unchanged on the real robot.
 
+## Contents
+
+- [How it works](#how-it-works)
+- [Setup](#setup)
+- [Use cases](#use-cases)
+  - [Simulated robot, real gamepad](#simulated-robot-real-gamepad)
+  - [Simulated robot, virtual joystick](#simulated-robot-virtual-joystick)
+  - [Real robot, real gamepad](#real-robot-real-gamepad)
+  - [Real robot, virtual joystick](#real-robot-virtual-joystick)
+- [Controls](#controls)
+- [Safety](#safety)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Known limitations](#known-limitations)
+
+Guides: [simulation](docs/simulation.md) · [real robot](docs/real-robot.md) ·
+[input devices](docs/input-devices.md) · [safety](docs/safety.md)
+
 ## How it works
 
 ```

@@ -40,3 +40,12 @@ def test_relative_links_resolve(doc):
         assert dest.exists(), f"{doc.name}: {target} -> missing {dest}"
         if anchor:
             assert anchor in anchors(dest), f"{doc.name}: {target} -> no heading #{anchor}"
+
+
+def test_readme_contents_lists_every_section():
+    """The README's table of contents names every ## / ### heading, in order."""
+    text = re.sub(r"```.*?```", "", (REPO / "README.md").read_text(), flags=re.S)
+    headings = [slug(h) for h in re.findall(r"^#{2,3} (.+)$", text, flags=re.M)]
+    toc = text.split("## Contents", 1)[1].split("\n## ", 1)[0]
+    listed = re.findall(r"\]\(#([^)]+)\)", toc)
+    assert listed == [h for h in headings if h != "contents"]
