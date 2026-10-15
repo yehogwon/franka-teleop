@@ -3,10 +3,7 @@
 Gamepad teleoperation for Franka arms (FR3 or Panda). A session rehearsed in simulation runs
 unchanged on the real robot.
 
-The simulator is [franky-sim](https://github.com/TimSchneider42/franky-sim), a MuJoCo server that
-speaks the **real libfranka network protocol**. The teleop node drives it through
-[franky](https://github.com/TimSchneider42/franky) exactly as it drives the arm, so moving to
-hardware changes one line of config: the robot's IP address.
+## How it works
 
 ```
                       operator laptop (Linux, PREEMPT_RT, wired to the arm)
@@ -24,8 +21,17 @@ hardware changes one line of config: the robot's IP address.
                                  └───────────────────────────────────────────────────┘
 ```
 
-`configs/sim.toml` and `configs/real.toml` differ **only** in `robot.host` and `sim.enabled`. A
-test enforces this.
+- **`ft-joystick`** reads the operator: a physical gamepad, or a virtual joystick (a gamepad
+  drawn in the browser, the keyboard or a script). It sends `TeleopCommand`s at 100 Hz over ZMQ.
+- **`ft-node`** turns them into Cartesian velocity motions through
+  [franky](https://github.com/TimSchneider42/franky) (libfranka). It enforces the deadman, a
+  watchdog and the workspace, floor, singularity and joint-limit guards.
+- **The robot** is the real arm or [franky-sim](https://github.com/TimSchneider42/franky-sim), a
+  MuJoCo server that speaks the **real libfranka network protocol**. The node drives both the same
+  way, so moving to hardware changes the robot's address: `configs/sim.toml` and
+  `configs/real.toml` differ only in `robot.host` and `sim.enabled` (a test enforces this).
+- **`ft-view`** shows the arm in a native window, in the browser (for headless machines) or as a
+  video. **`ft-teleop`** starts the whole session in order and shuts it down safely.
 
 ## Setup
 
@@ -36,230 +42,88 @@ uv run pytest -m "not slow"
 
 Linux x86_64 only, because franky ships wheels only for that platform.
 
-## Quick start (simulation)
+## Use cases
+
+|  | Real gamepad | Virtual joystick (web pad, keyboard, script) |
+|---|---|---|
+| **Simulated robot** | `uv run ft-teleop` | `uv run ft-teleop --input webpad` |
+| **Real robot** | `uv run ft-teleop -c configs/real.toml` | `… -c configs/real.toml --input webpad` (opt-in) |
+
+On a machine without a realtime kernel (e.g. a dev server), add `FT_REALTIME=ignore` for
+simulation; never for the real robot.
+
+### Simulated robot, real gamepad
+
+Plug the pad into the machine running the simulation and rehearse the real session:
 
 ```bash
-uv run ft-check-joystick --once          # is the gamepad detected?
-uv run ft-teleop                         # ft-sim + ft-node + viewer + gamepad (configs/sim.toml)
-uv run ft-teleop --input webpad          # no gamepad: a gamepad drawn in the web viewer
-uv run ft-teleop --input keyboard        # or type in this terminal (not the viewer)
+uv run ft-check-joystick --once     # is the pad detected?
+uv run ft-teleop                    # ft-sim + ft-node + viewer + gamepad
+```
+
+The pad can also stay on your laptop while the simulation runs on a server (SSH tunnels):
+[simulation.md](docs/simulation.md#on-a-headless-server-over-ssh).
+
+### Simulated robot, virtual joystick
+
+No pad needed. The web pad is a virtual gamepad, read by the same code as a physical one:
+
+```bash
+uv run ft-teleop --input webpad     # gamepad in the web viewer: hold LB (or space) + drag a stick
+uv run ft-teleop --input keyboard   # type in this terminal
 uv run ft-teleop --input script --script configs/scripts/demo.toml
 ```
 
-On a machine **without a PREEMPT_RT kernel** (a dev box), libfranka cannot get realtime
-scheduling. Run with `FT_REALTIME=ignore` (or `--realtime ignore`). The config files always say
-`enforce`, so a rehearsal on the deployment laptop also exercises its realtime setup.
+Over SSH: `ssh -L 8080:localhost:8080 -L 8081:localhost:8081 server`, then open
+`http://localhost:8080`. Details: [simulation.md](docs/simulation.md).
 
-`ft-teleop` starts everything in the right order, passes every child the same effective config,
-and if any process dies it shuts the whole session down (joystick → node → viewer → sim). You
-can also run the processes yourself:
+### Real robot, real gamepad
 
-```bash
-uv run ft-sim                     # franky-sim on robot.host
-uv run ft-node                    # connects to the robot (or sim)
-uv run ft-view                    # native window; --mode web | snapshot | record
-uv run ft-joystick                # --device gamepad | keyboard | script
-```
-
-### Headless machine / over SSH
+The deployment: a PREEMPT_RT laptop wired to the arm, FCI active in Desk, `robot.host` and the
+workspace set in `configs/real.toml`. Then:
 
 ```bash
-# on the server: robot view + a gamepad in the browser
-FT_REALTIME=ignore uv run ft-teleop --input webpad
-# on your machine
-ssh -L 8080:localhost:8080 -L 8081:localhost:8081 server   # then open http://localhost:8080
+uv run ft-check-rt                              # realtime setup
+uv run ft-check-robot -c configs/real.toml      # read-only: connects, never moves
+uv run ft-teleop -c configs/real.toml           # preflight, node, viewer, gamepad
 ```
 
-With `--input keyboard --viewer web` instead, only port 8080 is needed.
+Follow the full checklist in [real-robot.md](docs/real-robot.md) the first time.
 
-`ft-view --mode record --out run.mp4 --duration 10` and `--mode snapshot` render offscreen
-(EGL) without any display. Keyboard input works in an SSH terminal: keep that terminal
-focused while you watch the browser. Keys pressed in the browser tab move viser's camera
-(W/A/S/D/Q/E), not the robot.
+### Real robot, virtual joystick
 
-`ft-view` draws ft-sim's full scene in simulation. With a robot config (`sim.enabled = false`)
-it always draws the arm from ft-node's joint states and never shows a simulator. If an ft-view
-stops receiving updates for more than 1 s, it marks the view **STALE**.
+Allowed only after you add the device to `teleop.allowed_sources` (in both config files):
+
+```bash
+uv run ft-teleop -c configs/real.toml --input webpad
+```
+
+What each device means on the real arm:
+[real-robot.md](docs/real-robot.md#with-a-virtual-joystick).
 
 ## Controls
 
-Hold **LB** (the deadman) to move. Releasing it stops the arm. Nothing moves, not even the
-gripper, unless the deadman is held. After the pad connects or reconnects, release LB once
-before it counts. If the pad drops out, the reader waits for *that* pad (matched by its
-identity, not its slot) and ignores any other pad.
+Hold **LB** (the deadman) to move; releasing it stops the arm. Left stick: forward/back and
+left/right; RT/LT: up/down; right stick: yaw and pitch; d-pad: roll and speed level; A gripper,
+X base/tool frame, Y home, B stop, START recover. Every device and key:
+[input-devices.md](docs/input-devices.md). The web viewer lists the controls in its panel.
 
-| Gamepad | Action |
-|---|---|
-| LB (hold) | deadman |
-| left stick | forward/back, left/right |
-| RT / LT | up / down |
-| right stick ←→ | yaw |
-| right stick ↑↓ | pitch |
-| d-pad ←→ | roll |
-| d-pad ↑↓ | speed level up / down (25 / 50 / 75 / 100 %) |
-| A | gripper close / open (needs deadman) |
-| X | toggle base / tool frame |
-| Y | go home (keep holding the deadman; releasing it aborts) |
-| B | stop and lock |
-| START | recover from a robot error / unlock |
+## Safety
 
-Directions are given for an operator standing **behind the robot, looking along +x**. If you
-face the robot, set `teleop.operator_yaw_deg = 180`. In tool frame, "up" moves along the approach
-direction (out of the fingers). Before the first real run, use `ft-check-joystick` to check the
-directions on your pad.
+The node enforces these rules itself, whatever the input device:
 
-Keyboard (`--input keyboard`) reads the **terminal** that runs `ft-teleop` (or
-`ft-joystick`). The viewers only display: the browser viewer uses W/A/S/D/Q/E for its camera
-and the native MuJoCo window has its own key bindings, so click back into the terminal before
-typing. `space` toggles the deadman (terminals have no key-up events).
-Any space press while the deadman is on turns it off at once, and holding space leaves it off.
-`w/s a/d r/f` translate, `j/l i/k u/o` yaw, pitch and roll, `g` gripper, `h` home, `b` stop,
-`c` recover, `t` frame, `]`/`[` speed, `q` quit. Keyboard and script input are accepted only
-when `sim.enabled` is true, unless you add them to `teleop.allowed_sources`.
+- the arm moves only while a fresh command (under 150 ms old) holds the deadman;
+- a new joystick must release the deadman once before anything moves;
+- stops are smooth, dynamics-limited decelerations;
+- franky holds each velocity target for at most 100 ms, so the arm stops by itself if `ft-node`
+  dies;
+- limiters keep the hand inside a workspace box, the wrist and hand above the table, and the arm
+  away from singularities and joint limits.
 
-The web viewer lists these controls in its panel (keyboard and gamepad; the one `ft-teleop`
-was started with is expanded).
+Details and measurements: [safety.md](docs/safety.md).
 
-### Web joystick
-
-`ft-teleop --input webpad` draws a gamepad in the web viewer's panel (`ft-joystick --device
-webpad` serves it on `input.webpad_port`, 8081; `http://localhost:8081` is the pad on its own,
-e.g. on a tablet). It has the gamepad's layout and labels: hold **LB** while moving a stick, as on
-the real pad; a stick without LB does nothing (the pad then outlines LB in red and says so). With
-a mouse, click the pad and hold the **space bar** as LB while dragging a stick (the space bar
-counts only while the pad has keyboard focus; holding it before the click works too). On a touch
-screen, hold LB with one finger and a stick with another.
-
-It talks to the robot exactly as a physical pad does. The page's state drives an SDL *virtual*
-gamepad inside `ft-joystick`, which the unchanged gamepad reader and mapping read (deadzone,
-expo, rising-edge buttons, LB re-arm), and the commands carry `source = "gamepad"`. On top of
-that, the page behaves like a wireless pad:
-
-- One page holds the pad; other pages watch and can **Take control**, which re-plugs the pad.
-- Closing the page unplugs the pad. A page that sends nothing for 250 ms (frozen tab, network
-  stall) reads as fully released, so the node halts.
-- Losing focus or hiding the page releases every button and stick.
-- Only pages served by `ft-joystick` itself, on `localhost` or an IP address, may connect, so
-  another website open in the same browser cannot drive the robot.
-
-Over SSH, forward both ports: `ssh -L 8080:localhost:8080 -L 8081:localhost:8081 server`. The
-panel prints this line if the pad can't be reached.
-
-## Safety design
-
-The node enforces these rules itself, whatever the input device. All of them are covered by
-tests (`tests/node`).
-
-- **Deadman and freshness.** The node moves the arm only while the newest command is younger
-  than `teleop.cmd_timeout_ms` (150 ms) *and* has the deadman held. A stale stream counts as a
-  released deadman.
-- **Arming.** After a new joystick session, error recovery, unlocking, homing or a stream outage
-  longer than 1 s, the deadman must be seen *released* once before anything moves. A stuck
-  button or a stick already pushed can't start motion.
-- **Smooth stops.** Releasing the deadman, a stale stream or the stop button sends a franky
-  *stop motion* (dynamics-limited deceleration). The control loop is never just cut.
-- **Robot-side watchdog.** Each velocity target is held by franky for at most `teleop.hold_ms`
-  (100 ms), so the arm stops by itself even if `ft-node` dies.
-- **Limiters.** Each one restricts only motion *towards* a boundary, so you can always back out:
-  - *workspace box*: outward velocity of the TCP ramps to zero at the walls;
-  - *floor guard*: the box only constrains the TCP, and a hand tilted past horizontal puts the
-    wrist below it. The elbow and wrist joint frames, the flange and the hand-body corners are
-    kept above `workspace.floor` plus a clearance, using the robot's kinematic model;
-  - *singularity guard*: motion that lowers the smallest singular value of the (rotation-weighted)
-    Jacobian slows and stops before Cartesian tracking breaks down at the edge of reach. It uses
-    the robot's own kinematic model;
-  - *joint-limit guard*: stops `clearance` short of each limit, using the larger of the
-    predicted and the measured joint speed;
-  - default joint limits are the **intersection of FR3 and Panda limits**, valid for either arm.
-- **Errors** (reflexes) latch until START. Error recovery is franky's automatic recovery.
-- **One controller.** `ft-joystick` binds the command port, so a second joystick fails to start.
-- **Web joystick only in sim by default.** The node can't tell the web pad from a physical one
-  (that is the point), so `ft-joystick` enforces it: `--device webpad` refuses to start unless
-  `"webpad"` is allowed, which `sim.enabled` does automatically. On the robot, add it to
-  `teleop.allowed_sources` deliberately. Like the node's own source check, this guards against
-  misconfiguration, not against a hostile client.
-- **No orphans.** When the session stops, through any of Ctrl-C, SIGTERM, a closed terminal
-  (SIGHUP) or a child crashing, `ft-teleop` shuts down in order and halts the arm before
-  disconnecting. If the launcher itself is killed, the kernel sends its children SIGTERM.
-- **Sanity checks on the config.** A config with `sim.enabled` must point at a loopback
-  address, so keyboard and script input can never reach a real arm by accident.
-  `teleop.hold_ms` is capped at 250 ms. Commands with non-finite values are dropped.
-
-Measured against franky-sim (`tests/node/test_node_sim.py`, sim in a separate process):
-
-| Event | Arm at rest after |
-|---|---|
-| deadman released | 68 ms |
-| joystick process dies | 229 ms (150 ms timeout + braking) |
-| `ft-node` dies | 158 ms (100 ms robot-side hold + braking) |
-
-| Guard | Result |
-|---|---|
-| workspace walls (4 directions, full speed) | 0 mm overshoot |
-| singularity (reaching out and up) | σ ≥ 0.035, tracking error ≤ 5 mm/s |
-| wrist joint driven into its limit | stops ≥ 26 mrad short |
-| hand rolled over 15 cm above the table | wrist and hand stay clear of it |
-
-A randomized operator soak (`tests/node/test_soak.py`; random sticks, deadman, speed, frame,
-gripper, home, stop/recover) checks every status message: no robot errors, the TCP stays
-within 1 mm of the workspace box (the test allows 2 mm), no joint limit is crossed, and σ stays
-above the stop threshold. The soak is how the
-wrist-on-table gap was found. The soak and two independent code reviews also found the other
-failure modes listed above; each now has a regression test.
-
-The software deadman is **not** an emergency stop. Keep the Franka external enabling/emergency
-stop device in hand whenever the real arm is powered.
-
-## Deploying to the real robot
-
-Everything runs on the laptop. Do it in this order:
-
-1. **Realtime laptop.** Install a PREEMPT_RT kernel, add yourself to a `realtime` group with
-   `rtprio 99` and `memlock unlimited`, and set the CPU governor to `performance`. Then check:
-   `uv run ft-check-rt`. Every check must pass; it prints the fix for each failure.
-2. **Network.** Plug the laptop's built-in Ethernet port straight into the arm (FR3: the
-   robot's base; Panda: the control box). Give the laptop a static IP in the robot's subnet,
-   e.g. `172.16.0.1/24` for a robot at `172.16.0.2`.
-3. **Desk.** Unlock the brakes and activate FCI.
-4. **Config.** In `configs/real.toml` set `robot.host`. Measure your table and set `workspace`
-   (and `robot.home_q` if needed). Mirror any change in `configs/sim.toml`: the parity test
-   allows only `robot.host` and `sim.enabled` to differ.
-5. **Gripper.** After power-on the Franka Hand must be homed once, in Desk or with
-   `uv run python -c "import franky; franky.Gripper('<robot ip>').homing()"`, before its widths
-   are valid. An unhomed hand shows up as a gripper error in the status line.
-6. **Read-only check.** `uv run ft-check-robot -c configs/real.toml` connects without moving the
-   arm. It reports the robot mode, errors, joint margins, whether the end effector is inside the
-   workspace, the state rate and the gripper. If the robot's *server version* doesn't match the
-   installed franky, it prints the exact `pyproject.toml` change (see below).
-7. **Rehearse on the laptop.** `uv run ft-teleop` (sim config), with the same kernel, gamepad
-   and processes as the real run.
-8. **Go.** `uv run ft-teleop -c configs/real.toml` runs `ft-check-robot` first, then the node,
-   viewer and gamepad. Start at the lowest speed level (d-pad ↓). For the first sessions,
-   consider lowering `robot.dynamics_factor`.
-
-### Robot type and server version
-
-The robot type doesn't matter to the code: franky reads the kinematic model from the robot, and
-the default joint limits suit both arms. What matters is the robot's **libfranka server
-version**. The pinned `franky-control==2.0.0` from PyPI speaks version 10 (libfranka 0.21.2),
-which recent FR3 system images use and which franky-sim emulates. For other versions franky
-publishes wheels per server version (3 → libfranka 0.7.1, 4 → 0.8.0, 5 → 0.9.2, 6 → 0.12.1,
-7 → 0.13.3, 8 → 0.14.2, 9 → 0.17.0, 10 → 0.21.2). On a mismatch, `ft-check-robot` prints a
-snippet like:
-
-```toml
-[[tool.uv.index]]
-name = "franky-server-9"
-url = "https://timschneider42.github.io/franky/whl/by-robot-server-version/9/"
-explicit = true
-
-[tool.uv.sources]
-franky-control = { index = "franky-server-9" }
-```
-
-followed by `uv lock --upgrade-package franky-control && uv sync`. A non-default wheel can no
-longer talk to franky-sim (protocol version 10). Rehearse in sim first, or keep a second
-checkout.
+The software deadman is **not** an emergency stop. Keep the arm's hardware stop within reach
+whenever it is powered.
 
 ## Configuration
 
@@ -332,13 +196,9 @@ against franky-sim on a loopback address.
   the target down. The node retries a single rejection transparently. Three within 2 s halt the
   arm and require a deadman release. If the robot reports an error at the same time, the node
   latches the error mode.
-- **The web joystick depends on the browser.** Releasing LB or a stick, hiding the page or
-  losing focus stops the arm right away. Closing the tab stops it only once the browser has
-  torn the page down: 0.35-0.5 s for the viewer page with software rendering on the headless
-  test box (about 25 ms for the pad on its own). A frozen page is cut off after 250 ms. Tested in
-  Chromium only. The pad asks for its own process (`Origin-Agent-Cluster`) so the 3D view can't
-  delay it; a browser that ignores the request may stall its heartbeat when it is slow to render,
-  and the pad then reads as released (stop and go). The pad on its own page avoids that.
+- **The web joystick depends on the browser.** Tested in Chromium only; closing the tab stops the
+  arm once the browser has torn the page down (up to 0.5 s here). See
+  [input-devices.md](docs/input-devices.md#web-joystick-webpad).
 - **Not tested on real hardware.** A physical gamepad's trigger ranges and rumble, a PREEMPT_RT
   laptop and the real arm can only be checked on the deployment hardware. The preflight tools
   (`ft-check-rt`, `ft-check-joystick`, `ft-check-robot`) exist for exactly that.
